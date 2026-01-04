@@ -27,13 +27,19 @@ class GeminiService {
   constructor() {}
 
   private getAuthHeaders(): Record<string, string> {
-    const token = typeof window !== "undefined" ? localStorage.getItem("gitverse_token") : null;
+    const token =
+      typeof window !== "undefined"
+        ? localStorage.getItem("gitverse_token")
+        : null;
     return token ? { Authorization: `Bearer ${token}` } : {};
   }
 
   isConfigured(): boolean {
     // AI endpoints require authentication; the API key is server-side.
-    const token = typeof window !== "undefined" ? localStorage.getItem("gitverse_token") : null;
+    const token =
+      typeof window !== "undefined"
+        ? localStorage.getItem("gitverse_token")
+        : null;
     return !!token;
   }
 

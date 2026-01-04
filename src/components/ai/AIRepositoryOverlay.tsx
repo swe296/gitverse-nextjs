@@ -60,8 +60,8 @@ export function AIRepositoryOverlay({ repository }: AIRepositoryOverlayProps) {
 
     if (!geminiService.isConfigured()) {
       toast({
-        title: 'Login required',
-        description: 'Please log in to use the repository assistant.',
+        title: "Login required",
+        description: "Please log in to use the repository assistant.",
         variant: "destructive",
       });
       return;

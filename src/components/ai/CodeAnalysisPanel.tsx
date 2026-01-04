@@ -74,8 +74,8 @@ export function CodeAnalysisPanel() {
 
     if (!geminiService.isConfigured()) {
       toast({
-        title: 'Login required',
-        description: 'Please log in to use AI features.',
+        title: "Login required",
+        description: "Please log in to use AI features.",
         variant: "destructive",
       });
       return;
