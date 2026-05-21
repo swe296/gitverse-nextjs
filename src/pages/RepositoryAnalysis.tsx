@@ -28,6 +28,7 @@ import axios from "axios";
 import { useToast } from "@/hooks/use-toast";
 import { EmptyState } from "@/components/ui";
 import { buildApiUrl } from "@/services/apiConfig";
+import { RepositoryAnalysisSkeleton } from "@/components/ui/RepositoryAnalysisSkeleton";
 
 type TabType =
   | "overview"
