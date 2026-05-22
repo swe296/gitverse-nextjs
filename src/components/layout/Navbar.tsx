@@ -1,3 +1,4 @@
+"use client";
 import React, { useState } from 'react'
 import Link from 'next/link'
 import { GitBranch, Menu, X } from 'lucide-react'
@@ -77,7 +78,6 @@ export const Navbar: React.FC = () => {
                 </a>
               ))}
               <div className="flex flex-col gap-3 pt-4 border-t border-border/50">
-                <ThemeToggle />
                 <Button className="bg-gradient-primary" asChild>
                   <Link href="/login">Sign In</Link>
                 </Button>
