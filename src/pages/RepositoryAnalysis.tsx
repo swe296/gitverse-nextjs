@@ -276,14 +276,17 @@ export default function RepositoryAnalysis() {
       default:             return <RepositoryOverview />;
     }
   };
+const lastAnalyzedDate = repository?.lastAnalyzedAt
+  ? new Date(repository.lastAnalyzedAt)
+  : null;
 
-const formattedLastAnalyzed = repository?.updatedAt
-  ? new Intl.DateTimeFormat("en-US", {
-      dateStyle: "medium",
-      timeStyle: "short",
-    }).format(new Date(repository.updatedAt))
-  : "Not available";
-  
+const formattedLastAnalyzed =
+  lastAnalyzedDate && !isNaN(lastAnalyzedDate.getTime())
+    ? new Intl.DateTimeFormat("en-US", {
+        dateStyle: "medium",
+        timeStyle: "short",
+      }).format(lastAnalyzedDate)
+    : "Not available";
   return (
     <DashboardLayout>
       <div className="space-y-6">
