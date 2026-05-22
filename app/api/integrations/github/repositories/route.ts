@@ -22,6 +22,16 @@ export async function POST(request: NextRequest) {
 
     if (token) {
       const github = new GitHubService(token);
+      const valid = await github.validateToken();
+      if (!valid) {
+        return NextResponse.json(
+          {
+            error:
+              "Your GitHub token is invalid or has expired. Reconnect your GitHub account to continue.",
+          },
+          { status: 401 },
+        );
+      }
       const repositories = await github.listUserRepositories(username);
       return NextResponse.json({ repositories, source: "user-token" });
     }
