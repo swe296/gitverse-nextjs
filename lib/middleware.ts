@@ -1,7 +1,68 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import { getToken } from "next-auth/jwt";
-import { verifyToken } from "./auth";
+import { verifyToken, JWTPayload } from "./auth";
+
+export interface AuthenticatedRequest {
+  user: JWTPayload;
+}
+
+export async function getAuthUser(
+  request: NextRequest
+): Promise<JWTPayload | null> {
+  const authHeader = request.headers.get("authorization");
+
+  // 1) Existing JWT auth (Authorization: Bearer ...)
+  if (authHeader && authHeader.startsWith("Bearer ")) {
+    const token = authHeader.substring(7);
+    const payload = verifyToken(token);
+    if (payload) return payload;
+  }
+
+  // 2) NextAuth session cookie (Google OAuth)
+  try {
+    const token = await getToken({
+      req: request,
+      secret: process.env.NEXTAUTH_SECRET,
+    });
+    if (!token?.sub || !token.email) return null;
+
+    const userId = Number(token.sub);
+    if (!Number.isFinite(userId)) return null;
+
+    return { userId, email: token.email };
+  } catch {
+    return null;
+  }
+}
+
+export async function requireAuth(request: NextRequest): Promise<JWTPayload> {
+  const user = await getAuthUser(request);
+
+  if (!user) {
+    throw new HttpError(401, "Unauthorized");
+  }
+
+  return user;
+}
+
+export class HttpError extends Error {
+  status: number;
+
+  constructor(status: number, message: string) {
+    super(message);
+    this.status = status;
+  }
+}
+
+export function isHttpError(error: unknown): error is HttpError {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "status" in error &&
+    typeof (error as any).status === "number"
+  );
+}
 
 export class HttpError extends Error {
   status: number;
@@ -123,49 +184,7 @@ export async function requireAuth(request: NextRequest): Promise<JWTPayload> {
 
 // This tells Next.js WHICH pages/routes to protect
 export const config = {
-  matcher: ["/api/:path*", "/dashboard/:path*", "/profile/:path*"],
+  // We explicitly DO NOT include '/api/:path*' because API routes 
+  // manage their own auth via requireAuth(), allowing webhooks and crons to work.
+  matcher: ["/dashboard/:path*", "/profile/:path*"],
 };
-
-export function badRequestResponse(message = "Bad request") {
-  return new NextResponse(JSON.stringify({ error: message }), {
-    status: 400,
-    headers: { "Content-Type": "application/json" },
-  });
-}
-
-export function unauthorizedResponse(message = "Authentication required") {
-  return new NextResponse(JSON.stringify({ error: message }), {
-    status: 401,
-    headers: { "Content-Type": "application/json" },
-  });
-}
-
-export function forbiddenResponse(message = "You do not have access to this resource") {
-  return new NextResponse(JSON.stringify({ error: message }), {
-    status: 403,
-    headers: { "Content-Type": "application/json" },
-  });
-}
-
-export function notFoundResponse(message = "Resource not found") {
-  return new NextResponse(JSON.stringify({ error: message }), {
-    status: 404,
-    headers: { "Content-Type": "application/json" },
-  });
-}
-
-export function isHttpError(error: any): error is { status: number; message: string } {
-  return typeof error === "object" && error !== null && "status" in error && "message" in error;
-}
-
-export async function getAuthUser(request: NextRequest) {
-  const token = await getToken({ req: request, secret: process.env.NEXTAUTH_SECRET });
-  if (!token || !token.sub) return null;
-  return { userId: parseInt(token.sub, 10) };
-}
-
-export async function requireAuth(request: NextRequest) {
-  const user = await getAuthUser(request);
-  if (!user || !user.userId) throw { status: 401, message: "Authentication required" };
-  return user;
-}

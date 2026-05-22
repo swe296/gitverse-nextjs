@@ -686,3 +686,36 @@ export class RepositoryService {
 }
 
 export const repositoryService = new RepositoryService();
+interface GetRepositoriesOptions {
+  userId: number;
+  limit: number;
+  cursor?: string;
+}
+
+export async function getRepositories({ userId, limit, cursor }: GetRepositoriesOptions) {
+  const cursorId = cursor ? parseInt(cursor.trim(), 10) : undefined;
+if (cursor && (!/^[1-9]\d*$/.test(cursor.trim()) || isNaN(cursorId!))) {
+  throw new Error("Invalid cursor value");
+}
+
+  return prisma.repository.findMany({
+    where: { userId },
+    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+    take: limit,
+    ...(cursorId ? { cursor: { id: cursorId }, skip: 1 } : {}),
+    include: {
+      _count: {
+        select: {
+          commits: true,
+          contributors: true,
+          files: true,
+          branches: true,
+        },
+      },
+      languages: {
+        orderBy: { percentage: "desc" },
+        take: 3,
+      },
+    },
+  });
+}

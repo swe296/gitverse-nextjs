@@ -136,6 +136,11 @@ async function runJob(
   }
 }
 
+export interface JobOutcome {
+  jobId: string;
+  status: "processed" | "failed";
+}
+
 export interface AnalysisWorkerSummary {
   totalJobsScanned: number;
   jobsProcessed: number;
@@ -171,11 +176,7 @@ export async function startAnalysisWorkerLoop(opts?: {
   let jobsProcessed = 0;
   let jobsSkipped = 0;
   let jobsFailed = 0;
-  
-  const timeBudgetMs = opts?.timeBudgetMs;
-  const budgetGraceMs = opts?.budgetGraceMs ?? 10_000; // 10s default buffer
-  let budgetExhausted = false;
-  let earlyStopReason: string | undefined;
+  const jobOutcomes: JobOutcome[] = [];
 
   const shutdown = async (signal: string) => {
     if (stopping) return;
@@ -218,8 +219,15 @@ export async function startAnalysisWorkerLoop(opts?: {
       console.log(
         `claimed job ${job.id} (attempt ${job.attempts}/${job.maxAttempts})`
       );
-      await runJob(job, { workerId, lockMs, heartbeatIntervalMs });
-      jobsProcessed++;
+      const isSuccess = await runJob(job, { workerId, lockMs, heartbeatIntervalMs });
+      
+      if (isSuccess) {
+        jobsProcessed++;
+        jobOutcomes.push({ jobId: job.id, status: "processed" });
+      } else {
+        jobsFailed++;
+        jobOutcomes.push({ jobId: job.id, status: "failed" });
+      }
 
       if (opts?.once) {
         console.log(`Finished one-shot run. Processed ${jobsProcessed} jobs.`);
