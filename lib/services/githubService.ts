@@ -196,9 +196,9 @@ export class GitHubService {
           }
         }
 
-        const retryStatusCodes = [409, 502, 503, 504];
+        const retryStatusCodes = [409, 500, 502, 503, 504];
         if (
-          (status && retryableCodes.includes(status)) ||
+          (status && retryStatusCodes.includes(status)) ||
           error.code === "ECONNABORTED" ||
           error.code === "ECONNRESET" ||
           error.code === "ETIMEDOUT" ||
@@ -206,11 +206,17 @@ export class GitHubService {
         ) {
           if (config.retryCount < 3) {
             config.retryCount += 1;
-            const backoff = Math.pow(2, config.retryCount) * 1000 + Math.random() * 1000;
+            const retryAfter = error.response?.headers?.["retry-after"];
+            const delayMs = retryAfter
+              ? parseInt(retryAfter, 10) * 1000
+              : Math.min(30_000, Math.pow(2, config.retryCount) * 1000 + Math.random() * 1000);
             console.log(`Retrying GitHub API request ${config.url} (attempt ${config.retryCount}) due to ${status || error.code}...`);
-            await new Promise((resolve) => setTimeout(resolve, backoff));
+            await new Promise((resolve) => setTimeout(resolve, delayMs));
             return this.client(config);
           }
+          console.warn(
+            `GitHub API request ${config.url} failed after 3 retries (${status || error.code})`,
+          );
         }
 
         throw sanitizeGitHubError(error);
