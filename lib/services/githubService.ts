@@ -98,8 +98,18 @@ export interface GitHubCommit {
       email: string;
       date: string;
     };
+    committer: {
+      name: string;
+      email: string;
+      date: string;
+    };
     message: string;
+    tree: {
+      sha: string;
+      url: string;
+    };
   };
+  parents: Array<{ sha: string; url: string }>;
   stats?: {
     total: number;
     additions: number;
@@ -180,7 +190,7 @@ export class GitHubService {
           const rateLimitRemaining = error.response?.headers?.["x-ratelimit-remaining"];
           const retryAfterHeader = error.response?.headers?.["retry-after"];
           if (status === 429 || rateLimitRemaining === "0" || retryAfterHeader) {
-            if (config.rateLimitRetryCount >= 3) {
+            if (config.retryCount >= 3) {
               const resetHeader = error.response?.headers?.["x-ratelimit-reset"];
               let retrySeconds = 60;
 
@@ -208,13 +218,19 @@ export class GitHubService {
           error.code === "ETIMEDOUT" ||
           !error.response
         ) {
-          if (config.transientRetryCount < 3) {
-            config.transientRetryCount += 1;
-            const backoff = Math.pow(2, config.transientRetryCount) * 1000 + Math.random() * 1000;
-            console.log(`Retrying ${config.url} (attempt ${config.transientRetryCount}/3) due to ${status || error.code}...`);
-            await new Promise((resolve) => setTimeout(resolve, backoff));
+          if (config.retryCount < 3) {
+            config.retryCount += 1;
+            const retryAfter = error.response?.headers?.["retry-after"];
+            const delayMs = retryAfter
+              ? parseInt(retryAfter, 10) * 1000
+              : Math.min(30_000, Math.pow(2, config.retryCount) * 1000 + Math.random() * 1000);
+            console.log(`Retrying GitHub API request ${config.url} (attempt ${config.retryCount}) due to ${status || error.code}...`);
+            await new Promise((resolve) => setTimeout(resolve, delayMs));
             return this.client(config);
           }
+          console.warn(
+            `GitHub API request ${config.url} failed after 3 retries (${status || error.code})`,
+          );
         }
 
         throw sanitizeGitHubError(error);
@@ -272,18 +288,35 @@ export class GitHubService {
     },
   ): Promise<GitHubRepository[]> {
     const endpoint = username ? `/users/${username}/repos` : "/user/repos";
+    const perPage = params?.per_page || 100;
+    const maxPages = 10;
 
-    const response = await this.client.get(endpoint, {
-      params: {
-        type: params?.type || "owner",
-        sort: params?.sort || "updated",
-        direction: params?.direction || "desc",
-        per_page: params?.per_page || 30,
-        page: params?.page || 1,
-      },
-    });
+    const all: GitHubRepository[] = [];
+    try {
+      for (let page = 1; page <= maxPages; page++) {
+        const response = await this.client.get(endpoint, {
+          params: {
+            type: params?.type || "owner",
+            sort: params?.sort || "updated",
+            direction: params?.direction || "desc",
+            per_page: perPage,
+            page,
+          },
+        });
 
-    return response.data;
+        const items: GitHubRepository[] = response.data;
+        if (!Array.isArray(items) || items.length === 0) break;
+        all.push(...items);
+        if (items.length < perPage) break;
+      }
+    } catch (error) {
+      if (isAxiosError(error) && error.response?.status === 404) {
+        return [];
+      }
+      throw sanitizeGitHubError(error);
+    }
+
+    return all;
   }
 
   /**
@@ -516,6 +549,7 @@ export class GitHubService {
   async getContributors(
     owner: string,
     repo: string,
+    params?: { per_page?: number },
   ): Promise<
     Array<{
       login: string;
@@ -523,13 +557,141 @@ export class GitHubService {
       avatar_url: string;
     }>
   > {
+    const perPage = Math.min(Math.max(params?.per_page ?? 100, 1), 100);
+    const maxPages = 5;
+
+    const all: Array<{
+      login: string;
+      contributions: number;
+      avatar_url: string;
+    }> = [];
     try {
-      const response = await this.client.get(
-        `/repos/${owner}/${repo}/contributors`,
-      );
-      return response.data;
+      for (let page = 1; page <= maxPages; page++) {
+        const response = await this.client.get(
+          `/repos/${owner}/${repo}/contributors`,
+          { params: { per_page: perPage, page } },
+        );
+
+        const items: Array<{
+          login: string;
+          contributions: number;
+          avatar_url: string;
+        }> = response.data;
+        if (!Array.isArray(items) || items.length === 0) break;
+        all.push(...items);
+        if (items.length < perPage) break;
+      }
     } catch (error) {
       if (isAxiosError(error) && error.response?.status === 404) {
+        return [];
+      }
+      throw sanitizeGitHubError(error);
+    }
+
+    return all;
+  }
+
+  /**
+   * Paginated commits — fetches all pages up to maxCommits.
+   */
+  async getCommitsAll(
+    owner: string,
+    repo: string,
+    params?: {
+      sha?: string;
+      path?: string;
+      maxCommits?: number;
+    },
+  ): Promise<GitHubCommit[]> {
+    const all: GitHubCommit[] = [];
+    const perPage = 100;
+    const maxCommits = params?.maxCommits ?? 1000;
+
+    for (let page = 1; page <= Math.ceil(maxCommits / perPage); page++) {
+      const batch = await this.getCommits(owner, repo, {
+        sha: params?.sha,
+        path: params?.path,
+        per_page: perPage,
+        page,
+      });
+      all.push(...batch);
+      if (batch.length < perPage) break;
+      if (all.length >= maxCommits) break;
+    }
+
+    return all.slice(0, maxCommits);
+  }
+
+  /**
+   * Paginated contributors — fetches all pages up to a max.
+   */
+  async getContributorsAll(
+    owner: string,
+    repo: string,
+  ): Promise<Array<{ login: string; contributions: number; avatar_url: string }>> {
+    const all: Array<{ login: string; contributions: number; avatar_url: string }> = [];
+    const perPage = 100;
+    const maxPages = 5;
+
+    for (let page = 1; page <= maxPages; page++) {
+      try {
+        const response = await this.client.get(`/repos/${owner}/${repo}/contributors`, {
+          params: { per_page: perPage, page },
+        });
+        const items = response.data;
+        if (!Array.isArray(items) || items.length === 0) break;
+        all.push(...items);
+        if (items.length < perPage) break;
+      } catch (error) {
+        if (isAxiosError(error) && error.response?.status === 404) break;
+        throw sanitizeGitHubError(error);
+      }
+    }
+
+    return all;
+  }
+
+  /**
+   * Fetch the full file tree for a repository via the Git Trees API.
+   * Returns only blob (file) entries with their paths and sizes.
+   */
+  async getFileTree(
+    owner: string,
+    repo: string,
+  ): Promise<Array<{ path: string; size: number }>> {
+    const repoInfo = await this.getRepository(owner, repo);
+    if (!repoInfo) return [];
+
+    try {
+      const branchResponse = await this.client.get(
+        `/repos/${owner}/${repo}/branches/${repoInfo.default_branch}`,
+      );
+      const commitSha = branchResponse.data?.commit?.sha;
+      if (!commitSha) return [];
+
+      const commitResponse = await this.client.get(
+        `/repos/${owner}/${repo}/commits/${commitSha}`,
+      );
+      const treeSha = commitResponse.data?.commit?.tree?.sha;
+      if (!treeSha) return [];
+
+      const treeResponse = await this.client.get(
+        `/repos/${owner}/${repo}/git/trees/${treeSha}`,
+        { params: { recursive: 1 } },
+      );
+
+      const entries = treeResponse.data?.tree;
+      if (!Array.isArray(entries)) return [];
+
+      if (treeResponse.data?.truncated) {
+        console.warn(`File tree truncated for ${owner}/${repo} (>100k entries)`);
+      }
+
+      return entries
+        .filter((e: any) => e.type === "blob")
+        .map((e: any) => ({ path: e.path, size: e.size ?? 0 }));
+    } catch (error) {
+      if (isAxiosError(error) && error.response?.status === 409) {
         return [];
       }
       throw sanitizeGitHubError(error);
@@ -592,6 +754,44 @@ export class GitHubService {
       return true;
     } catch {
       return false;
+    }
+  }
+
+  /**
+   * Fetch repository README via GitHub API
+   */
+  async getReadme(
+    owner: string,
+    repo: string,
+  ): Promise<{ path: string; text: string } | null> {
+    try {
+      const response = await this.client.get(`/repos/${owner}/${repo}/readme`);
+      const data = response.data as {
+        path: string;
+        content: string;
+        encoding: string;
+      };
+
+      if (!data || !data.content) return null;
+
+      const decoded =
+        data.encoding === "base64"
+          ? Buffer.from(data.content, "base64").toString("utf8")
+          : data.content;
+
+      const trimmed = decoded.trim();
+      if (!trimmed) return null;
+
+      const maxChars = 200_000;
+      const safeText =
+        trimmed.length > maxChars ? trimmed.slice(0, maxChars) : trimmed;
+
+      return { path: data.path, text: safeText };
+    } catch (error) {
+      if (isAxiosError(error) && error.response?.status === 404) {
+        return null;
+      }
+      throw sanitizeGitHubError(error);
     }
   }
 }

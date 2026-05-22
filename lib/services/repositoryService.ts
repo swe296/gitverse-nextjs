@@ -1,5 +1,6 @@
 import prisma from "../prisma";
 import { GitService } from "./gitService";
+import { GitHubService } from "./githubService";
 import * as path from "path";
 import * as os from "os";
 import * as crypto from "crypto";
@@ -128,6 +129,30 @@ export class RepositoryService {
       throw new Error("Repository not found");
     }
 
+    const parsed = GitHubService.parseGitHubUrl(repository.url);
+    if (parsed) {
+      const account = await prisma.gitHubAccount.findUnique({
+        where: { userId },
+        select: { accessToken: true },
+      });
+
+      if (account?.accessToken) {
+        const github = new GitHubService(account.accessToken);
+        const readme = await github.getReadme(parsed.owner, parsed.repo);
+
+        const updated = await prisma.repository.update({
+          where: { id: repositoryId },
+          data: {
+            readmePath: readme?.path ?? "README.md",
+            readmeText: readme?.text ?? "doesnt exist",
+            readmeFetchedAt: new Date(),
+          },
+        });
+
+        return updated;
+      }
+    }
+
     const tempDir = path.join(
       os.tmpdir(),
       "gitverse",
@@ -137,7 +162,6 @@ export class RepositoryService {
     let gitService: GitService | null = null;
 
     try {
-      // For README we don't need all branches; keep it lightweight.
       gitService = await GitService.cloneRepository(repository.url, tempDir, {
         depth: 1,
         noSingleBranch: false,
@@ -198,7 +222,8 @@ export class RepositoryService {
   }
 
   /**
-   * Analyze a repository and store all data
+   * Analyze a repository and store all data.
+   * Uses GitHub API when the URL points to GitHub, avoiding a full git clone.
    */
   async analyzeRepository(
     repositoryId: number,
@@ -221,19 +246,29 @@ export class RepositoryService {
     const tracker = new AnalysisProgressTracker(repositoryId, opts?.onProgress);
     await tracker.update(1, "Starting analysis");
 
-    // Create temporary directory for cloning
-    const tempDir = path.join(
-      os.tmpdir(),
-      "gitverse",
-      `repo-${repositoryId}-${crypto.randomBytes(8).toString("hex")}`,
-    );
+    // Try to use GitHub API to avoid cloning.
+    const parsed = GitHubService.parseGitHubUrl(repository.url);
+    if (parsed) {
+      const gitHubAccount = await prisma.gitHubAccount.findUnique({
+        where: { userId: repository.userId },
+        select: { accessToken: true },
+      });
 
-    let gitService: GitService | null = null;
+      if (!gitHubAccount?.accessToken) {
+        throw new Error(
+          "Please connect your GitHub account in Settings to analyze this repository.",
+        );
+      }
 
-    try {
-      // Clone repository
-      await tracker.update(5, `Cloning repository ${repository.url}`);
-      gitService = await GitService.cloneRepository(repository.url, tempDir);
+      await this.analyzeViaGitHubApi(
+        repositoryId,
+        parsed.owner,
+        parsed.repo,
+        gitHubAccount.accessToken,
+        report,
+      );
+      return;
+    }
 
       // Capture README early (best-effort)
       try {
@@ -526,6 +561,7 @@ export class RepositoryService {
           progressMessage: "Analyzing contributors (failed, skipped)",
         });
       }
+    }
 
       // Detect languages
       try {
@@ -638,20 +674,7 @@ export class RepositoryService {
         },
       });
 
-      await tracker.update(100, "Completed");
-    } catch (error: any) {
-      await prisma.repository.update({
-        where: { id: repositoryId },
-        data: { status: "failed" },
-      });
-      await tracker.fail(error);
-      throw error;
-    } finally {
-      // Cleanup cloned repository
-      if (gitService) {
-        await gitService.cleanup();
-      }
-    }
+    await report({ progressPercent: 100, progressMessage: "Completed" });
   }
 
   /**
