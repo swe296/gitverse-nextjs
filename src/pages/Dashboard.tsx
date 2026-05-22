@@ -23,6 +23,7 @@ import {
   CardContent,
   Button,
   Input,
+  EmptyState,
 } from "@/components/ui";
 import { useAuth } from "@/contexts/AuthContext";
 import { buildApiUrl } from "@/services/apiConfig";
@@ -290,25 +291,19 @@ export default function Dashboard() {
                   Loading repositories...
                 </div>
               ) : recentRepositories.length === 0 ? (
-                <div className="flex flex-col items-center justify-center py-12 gap-4">
-                  <div className="p-4 rounded-full bg-primary/10">
-                  <GitBranch className="h-8 w-8 text-primary" />
-                  </div>
-                  <div className="text-center">
-                  <h3 className="font-semibold text-base mb-1">No repositories yet</h3>
-                  <p className="text-sm text-muted-foreground">
-                  Analyze your first repository to get started
-                  </p>
-                  </div>
-                <Button
-                className="bg-gradient-primary hover:opacity-90 transition-opacity"
-                onClick={() => router.push("/dashboard")}
-                >
-                <Plus className="h-4 w-4 mr-2" />
-                Analyze a Repository
-                </Button>
-                
-                </div>
+                <EmptyState
+                  icon={GitBranch}
+                  title="No Repositories Yet"
+                  description="You haven't analyzed any repositories yet. Enter a GitHub URL above to get started!"
+                  actionLabel="Analyze Repository"
+                  onAction={() => {
+                    const input = document.querySelector('input[type="url"]') as HTMLInputElement;
+                    if (input) {
+                      input.focus();
+                      window.scrollTo({ top: 0, behavior: 'smooth' });
+                    }
+                  }}
+                />
               ) : (
                 <div className="space-y-3">
                   {recentRepositories.map((repo) => (

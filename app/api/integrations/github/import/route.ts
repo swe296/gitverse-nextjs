@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAuth } from "@/lib/middleware";
-import { GitHubService } from "@/lib/services/githubService";
+import { GitHubService, GitHubRateLimitError } from "@/lib/services/githubService";
+import { sanitizeErrorMessage } from "@/lib/utils/rateLimit";
 import { repositoryService } from "@/lib/services/repositoryService";
 
 export async function POST(request: NextRequest) {
@@ -12,6 +13,13 @@ export async function POST(request: NextRequest) {
     if (!url) {
       return NextResponse.json(
         { error: "Repository URL is required" },
+        { status: 400 }
+      );
+    }
+
+    if (!token) {
+      return NextResponse.json(
+        { error: "GitHub token is required" },
         { status: 400 }
       );
     }
@@ -36,9 +44,17 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({ repository, source: "github" }, { status: 201 });
   } catch (error: any) {
-    console.error("GitHub import error:", error);
+    console.error("GitHub import error:", sanitizeErrorMessage(error));
+
+    if (error instanceof GitHubRateLimitError) {
+      return NextResponse.json(
+        { error: error.message, retryAfter: error.retryAfterSeconds },
+        { status: 429 }
+      );
+    }
+
     return NextResponse.json(
-      { error: "Failed to import from GitHub", details: error.message },
+      { error: "Failed to import from GitHub" },
       { status: 500 }
     );
   }
