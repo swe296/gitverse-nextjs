@@ -9,12 +9,6 @@ export async function POST(request: NextRequest) {
     const body = await request.json();
     const { name, url, description } = body;
 
-    console.log("Create repository request:", {
-      name,
-      url,
-      userId: user.userId,
-    });
-
     if (!name || !url) {
       return NextResponse.json(
         { error: "Name and URL are required" },
@@ -37,8 +31,6 @@ export async function POST(request: NextRequest) {
       description,
       userId: user.userId,
     });
-
-    console.log("Repository created:", repository.id);
 
     const job = await analysisJobService.createRepositoryAnalysisJob({
       repositoryId: repository.id,
