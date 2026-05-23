@@ -259,8 +259,10 @@ model Commit {
   createdAt    DateTime   @default(now()) @map("created_at")
   fileChanges  FileChange[]
 
+  // Unique constraint prevents duplicate commits per repository
   @@unique([repositoryId, hash])
-  @@index([repositoryId, committedAt])
+  // Index for fast commit listing by repository and date (most common query pattern)
+  @@index([repositoryId, committedAt(sort: Desc)])
   @@map("commits")
 }
 
