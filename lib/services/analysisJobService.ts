@@ -47,6 +47,19 @@ export class AnalysisJobService {
           },
         });
         if (existingJob) return existingJob;
+
+        // The active job may have completed between the P2002 and the lookup. Retry exactly once.
+        return await prisma.analysisJob.create({
+          data: {
+            repositoryId: params.repositoryId,
+            userId: params.userId,
+            type: "repository_analysis",
+            status: "QUEUED",
+            progressPercent: 0,
+            progressMessage: "Queued",
+            maxAttempts: params.maxAttempts ?? 3,
+          },
+        });
       }
       throw error;
     }
