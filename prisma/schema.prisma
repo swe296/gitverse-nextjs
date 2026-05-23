@@ -233,6 +233,8 @@ model Branch {
   updatedAt    DateTime   @updatedAt @map("updated_at")
 
   @@unique([repositoryId, name])
+  // Index for fast branch listing per repository
+  @@index([repositoryId])
   @@map("branches")
 }
 
