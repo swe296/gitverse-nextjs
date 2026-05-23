@@ -151,21 +151,51 @@
     box-shadow: 0 0 20px hsl(var(--accent) / 0.3);
   }
 
-  /* Infinite Carousel */
+  /* ─── Marquee carousel ─────────────────────────────────────────────────────
+     Single source of truth for duration: set here, nowhere else.
+     30s on mobile, 24s on md+ screens.
+     .marquee--paused (toggled by JS on touch/focus) stops the track.
+  ─────────────────────────────────────────────────────────────────────────── */
   .marquee {
     position: relative;
     overflow: hidden;
     width: 100%;
     padding-block: 1rem;
-    --marquee-duration: 20s;
+    --marquee-duration: 30s;
   }
 
+  @media (min-width: 768px) {
+    .marquee {
+      --marquee-duration: 24s;
+    }
+  }
+
+  .marquee__track {
+    display: flex;
+    align-items: stretch;
+    gap: 1.5rem;
+    width: max-content;
+    will-change: transform;
+    animation: marquee-x var(--marquee-duration) linear infinite;
+  }
+
+  /* Pause on hover */
+  .marquee--pause-on-hover:hover .marquee__track {
+    animation-play-state: paused;
+  }
+
+  /* Pause on touch / keyboard focus (toggled via JS) */
+  .marquee--paused .marquee__track {
+    animation-play-state: paused;
+  }
+
+  /* Edge fades — use the CSS variable so they work in light AND dark mode */
   .marquee::before,
   .marquee::after {
     content: "";
     position: absolute;
     top: 0;
-    width: 120px;
+    width: 60px;
     height: 100%;
     z-index: 10;
     pointer-events: none;
@@ -181,14 +211,27 @@
     background: linear-gradient(to left, hsl(var(--background)), transparent);
   }
 
-  .marquee__track {
-    display: flex;
-    align-items: stretch;
-    gap: 1.5rem;
-    width: max-content;
-    flex-wrap: nowrap;
-    will-change: transform;
-    animation: carousel-infinite var(--marquee-duration) linear infinite;
+  /* ─── Feature cards ────────────────────────────────────────────────────────
+     Unified width at all breakpoints — no jump mid-scroll.
+     300px on mobile, 300px on md+. Adjust the single value here if needed.
+  ─────────────────────────────────────────────────────────────────────────── */
+  .feature-card {
+    width: 300px;
+    min-width: 300px;
+    flex-shrink: 0;
+    border-radius: 1.5rem;
+    transition:
+      transform 260ms ease,
+      box-shadow 260ms ease,
+      border-color 260ms ease,
+      background-color 260ms ease;
+  }
+
+  .feature-card:hover {
+    transform: translateY(-6px);
+    box-shadow:
+      0 14px 40px hsl(var(--primary) / 0.16),
+      0 0 0 1px hsl(var(--primary) / 0.18);
   }
 
   /* Heatmap pulse background (activity hotspots) */
@@ -213,32 +256,10 @@
   }
 
   @media (min-width: 768px) {
-    .feature-card {
-      width: 280px;
-      min-width: 280px;
-    }
-
-    .marquee__track {
-      gap: 1rem;
-      animation-duration: 26s;
-    }
-
-    .marquee::before,
-    .marquee::after {
-      width: 50px;
-    }
-
     .heatmap-bg__grid {
       grid-template-columns: repeat(14, 12px);
       grid-auto-rows: 12px;
       gap: 10px;
-    }
-  }
-
-  @media (max-width: 640px) {
-    .feature-card {
-      width: 85vw;
-      min-width: 85vw;
     }
   }
 
@@ -309,6 +330,11 @@
     transform: rotate(18deg);
     animation: cta-scan 4.2s ease-in-out infinite;
     opacity: 0.9;
+  }
+
+  /* Safety: marquee track must never be hidden by .reveal opacity */
+  .marquee .marquee__track {
+    opacity: 1 !important;
   }
 
   /* Scroll reveal */
@@ -430,29 +456,6 @@
     animation: cta-icon-float 3.8s ease-in-out infinite;
   }
 
-  /* Feature cards: lift + glow */
-  .feature-card {
-    width: 360px;
-    min-width: 360px;
-    border-radius: 1.5rem;
-
-    transition:
-      transform 260ms ease,
-      box-shadow 260ms ease,
-      border-color 260ms ease,
-      background-color 260ms ease;
-
-    flex-shrink: 0;
-  }
-
-  .feature-card:hover {
-    transform: translateY(-6px);
-
-    box-shadow:
-      0 14px 40px hsl(var(--primary) / 0.16),
-      0 0 0 1px hsl(var(--primary) / 0.18);
-  }
-
   /* AI typing demo */
   .typing-cursor {
     display: inline-block;
@@ -527,12 +530,12 @@
   }
 }
 
-@keyframes carousel-infinite {
-  0% {
+@keyframes marquee-x {
+  from {
     transform: translateX(0);
   }
-  100% {
-    transform: translateX(calc(-50% - 0.75rem));
+  to {
+    transform: translateX(-50%);
   }
 }
 
@@ -540,6 +543,11 @@
   .marquee__track {
     animation: none;
     transform: none;
+  }
+
+  /* Ensure JS-toggled paused class also has no animation in reduced-motion */
+  .marquee--paused .marquee__track {
+    animation: none;
   }
 
   .reveal {
@@ -742,5 +750,25 @@
   }
   100% {
     transform: translateY(0);
+  }
+}
+
+/* Infinite carousel marquee animation
+   Translates the track by exactly 50% of its width (one complete set of cards).
+   With cloned cards at the end, this creates a seamless infinite loop.
+*/
+@keyframes marquee-x {
+  0% {
+    transform: translateX(0);
+  }
+  100% {
+    transform: translateX(-50%);
+  }
+}
+
+/* Reduced motion preference respects animation pause state */
+@media (prefers-reduced-motion: reduce) {
+  .marquee__track {
+    animation: none !important;
   }
 }

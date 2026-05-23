@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState, useRef } from "react";
 import { useRouter } from "next/navigation";
 import {
   GitBranch,
@@ -30,6 +30,7 @@ export default function LandingPage() {
   const [isLoading, setIsLoading] = useState(false);
   const [scoreAnimate, setScoreAnimate] = useState(false);
   const isAnalyzeDisabled = !repoUrl.trim() || isLoading;
+  const marqueeRef = useRef<HTMLDivElement>(null);
 
   const mentorMessages = useMemo(
     () => [
@@ -58,7 +59,6 @@ export default function LandingPage() {
     }
 
     const rafId = window.requestAnimationFrame(() => {
-      // Trigger CSS transitions (e.g., score ring fill) after first paint.
       setScoreAnimate(true);
     });
 
@@ -126,11 +126,31 @@ export default function LandingPage() {
     return () => window.clearTimeout(timeoutId);
   }, [mentorIsErasing, mentorMessageIndex, mentorMessages, mentorTyped]);
 
+  // Touch + focus handlers for marquee pause
+  useEffect(() => {
+    const el = marqueeRef.current;
+    if (!el) return;
+
+    const pause = () => el.classList.add("marquee--paused");
+    const resume = () => el.classList.remove("marquee--paused");
+
+    el.addEventListener("touchstart", pause, { passive: true });
+    el.addEventListener("touchend", resume, { passive: true });
+    el.addEventListener("focusin", pause);
+    el.addEventListener("focusout", resume);
+
+    return () => {
+      el.removeEventListener("touchstart", pause);
+      el.removeEventListener("touchend", resume);
+      el.removeEventListener("focusin", pause);
+      el.removeEventListener("focusout", resume);
+    };
+  }, []);
+
   const handleAnalyze = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!repoUrl.trim() || isLoading) return;
 
-    // Demo-only CTA: keep it as UI (no navigation / no analysis).
     setIsLoading(true);
     setTimeout(() => {
       setIsLoading(false);
@@ -563,12 +583,40 @@ export default function LandingPage() {
             </p>
           </div>
 
-          <div className="marquee reveal" data-reveal style={{ ["--marquee-duration" as any]: "22s" }}>
+          {/* Fixed carousel: no inline --marquee-duration, ref for touch/focus, aria attrs */}
+          <div
+            ref={marqueeRef}
+            className="marquee marquee--pause-on-hover"
+            role="region"
+            aria-label="GitVerse features"
+          >
             <div className="marquee__track">
-              {[...features, ...features].map((feature, index) => (
+              {features.map((feature, index) => (
                 <Card
-                  key={`${feature.title}-${index}`}
+                  key={`orig-${index}`}
                   className="glass feature-card group"
+                >
+                  <CardHeader>
+                    <div className="w-12 h-12 rounded-lg bg-gradient-primary flex items-center justify-center mb-4 group-hover:scale-110 transition-transform">
+                      <feature.icon className="h-6 w-6 text-primary-foreground" />
+                    </div>
+                    <CardTitle className="font-heading">
+                      {feature.title}
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <CardDescription className="text-muted-foreground text-base">
+                      {feature.description}
+                    </CardDescription>
+                  </CardContent>
+                </Card>
+              ))}
+              {/* Clone for seamless loop — distinct keys prevent React warnings */}
+              {features.map((feature, index) => (
+                <Card
+                  key={`clone-${index}`}
+                  className="glass feature-card group"
+                  aria-hidden="true"
                 >
                   <CardHeader>
                     <div className="w-12 h-12 rounded-lg bg-gradient-primary flex items-center justify-center mb-4 group-hover:scale-110 transition-transform">
