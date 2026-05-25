@@ -56,6 +56,8 @@ export async function POST(request: NextRequest) {
         { status: 400 }
       );
     }
+    // Normalize email to lowercase
+    const normalizedEmail = email.toLowerCase();
 
     if (password.length < 6) {
       return NextResponse.json(
@@ -65,7 +67,7 @@ export async function POST(request: NextRequest) {
     }
 
     const existingUser = await prisma.user.findUnique({
-      where: { email },
+      where: { email: normalizedEmail },
     });
 
     if (existingUser) {
@@ -92,7 +94,7 @@ export async function POST(request: NextRequest) {
 
     const user = await prisma.user.create({
       data: {
-        email,
+        email: normalizedEmail,
         passwordHash: hashedPassword,
         name,
       },

@@ -10,6 +10,9 @@ export async function POST(request: NextRequest) {
     const body = await request.json();
     const { email, password } = body;
 
+    // Normalize email to lowercase
+    const normalizedEmail = email.toLowerCase();
+
     // Validation
     if (!email || !password) {
       return NextResponse.json(
@@ -20,7 +23,7 @@ export async function POST(request: NextRequest) {
 
     // Find user
     const user = await prisma.user.findUnique({
-      where: { email },
+      where: { email: normalizedEmail },
     });
 
     if (!user) {
