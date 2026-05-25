@@ -719,6 +719,67 @@ export class RepositoryService {
       lastAnalyzedAt: repository.lastAnalyzedAt,
     };
   }
+
+  /**
+   * Get aggregate file-level statistics across the full repository history.
+   */
+  async getFileStats(
+    repositoryId: number,
+    userId: number,
+    paths: string[],
+  ) {
+    const repository = await prisma.repository.findFirst({
+      where: { id: repositoryId, userId },
+      select: { id: true },
+    });
+
+    if (!repository) {
+      throw new Error("Repository not found");
+    }
+
+    const uniquePaths = Array.from(
+      new Set(paths.map((path) => path.trim()).filter(Boolean)),
+    );
+
+    if (uniquePaths.length === 0) {
+      return [];
+    }
+
+    const stats = await prisma.fileChange.groupBy({
+      by: ["path"],
+      where: {
+        path: { in: uniquePaths },
+        commit: { repositoryId },
+      },
+      _count: { id: true },
+      _sum: {
+        additions: true,
+        deletions: true,
+      },
+    });
+
+    const statsByPath = new Map(
+      stats.map((stat) => [
+        stat.path,
+        {
+          path: stat.path,
+          commitCount: stat._count.id,
+          additions: stat._sum.additions ?? 0,
+          deletions: stat._sum.deletions ?? 0,
+        },
+      ]),
+    );
+
+    return uniquePaths.map(
+      (path) =>
+        statsByPath.get(path) ?? {
+          path,
+          commitCount: 0,
+          additions: 0,
+          deletions: 0,
+        },
+    );
+  }
 }
 
 export const repositoryService = new RepositoryService();
