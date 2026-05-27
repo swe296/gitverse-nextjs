@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { isHttpError, requireAuth } from "@/lib/middleware";
 import { repositoryService } from "@/lib/services/repositoryService";
 import { analysisJobService } from "@/lib/services/analysisJobService";
+import { validateRepoUrl } from "@/utils/repoUrlValidator";
 
 export async function POST(request: NextRequest) {
   try {
@@ -22,18 +23,24 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Validate URL format
-    const urlPattern = /^https?:\/\/.+/;
-    if (!urlPattern.test(url)) {
+    // Validate URL format using the enhanced validator
+    const validation = validateRepoUrl(url);
+    if (!validation.isValid) {
       return NextResponse.json(
-        { error: "Invalid repository URL" },
+        { 
+          error: validation.error || "Invalid repository URL",
+          suggestion: validation.suggestion
+        },
         { status: 400 }
       );
     }
 
+    // Use the normalized URL
+    const normalizedUrl = validation.parsed!.normalizedUrl;
+
     const repository = await repositoryService.createRepository({
       name,
-      url,
+      url: normalizedUrl,
       description,
       userId: user.userId,
     });

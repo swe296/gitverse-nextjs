@@ -29,6 +29,7 @@ import {
 import { useAuth } from "@/contexts/AuthContext";
 import { buildApiUrl } from "@/services/apiConfig";
 import axios from "axios";
+import { validateRepoUrl } from "@/utils/repoUrlValidator";
 
 interface Repository {
   id: string;
@@ -45,6 +46,11 @@ interface Repository {
   updatedAt?: string;
 }
 
+interface UrlError {
+  error: string;
+  suggestion?: string;
+}
+
 export default function Dashboard() {
   const { user } = useAuth();
   const router = useRouter();
@@ -52,6 +58,7 @@ export default function Dashboard() {
   const [repositories, setRepositories] = useState<Repository[]>([]);
   const [loading, setLoading] = useState(true);
   const [analyzing, setAnalyzing] = useState(false);
+  const [urlError, setUrlError] = useState<UrlError | null>(null);
 
   useEffect(() => {
     fetchRepositories();
@@ -149,19 +156,32 @@ export default function Dashboard() {
   const handleAnalyze = async () => {
     if (!repoUrl.trim()) return;
 
+    // Clear previous errors
+    setUrlError(null);
+
+    // Validate URL client-side first
+    const validation = validateRepoUrl(repoUrl.trim());
+    if (!validation.isValid) {
+      setUrlError({
+        error: validation.error || "Invalid repository URL",
+        suggestion: validation.suggestion,
+      });
+      return;
+    }
+
     setAnalyzing(true);
     try {
       const token = localStorage.getItem("gitverse_token");
 
-      // Extract repo name from URL
-      const urlParts = repoUrl.trim().split("/");
-      const repoName = urlParts[urlParts.length - 1];
+      // Use the normalized URL and extract repo name from parsed result
+      const normalizedUrl = validation.parsed!.normalizedUrl;
+      const repoName = validation.parsed!.repo;
 
       const response = await axios.post(
         buildApiUrl("/api/repositories"),
         {
           name: repoName,
-          url: repoUrl.trim(),
+          url: normalizedUrl,
           description: `Repository from ${repoUrl}`,
         },
         {
@@ -188,7 +208,9 @@ export default function Dashboard() {
       setRepoUrl("");
     } catch (error: any) {
       console.error("Error creating repository:", error);
-      alert(error.response?.data?.error || "Failed to analyze repository");
+      const errorMsg = error.response?.data?.error || "Failed to analyze repository";
+      const suggestion = error.response?.data?.suggestion;
+      setUrlError({ error: errorMsg, suggestion });
     } finally {
       setAnalyzing(false);
     }
@@ -211,14 +233,29 @@ export default function Dashboard() {
         <Card className="glass glow-primary">
           <CardContent className="pt-6">
             <div className="flex flex-col sm:flex-row gap-3">
-              <Input
-                type="url"
-                placeholder="https://github.com/username/repository"
-                value={repoUrl}
-                onChange={(e) => setRepoUrl(e.target.value)}
-                className="flex-1 bg-background/50"
-                onKeyPress={(e) => e.key === "Enter" && handleAnalyze()}
-              />
+              <div className="flex-1">
+                <Input
+                  type="url"
+                  placeholder="https://github.com/username/repository"
+                  value={repoUrl}
+                  onChange={(e) => {
+                    setRepoUrl(e.target.value);
+                    setUrlError(null);
+                  }}
+                  className={`flex-1 bg-background/50 ${urlError ? 'border-destructive focus-visible:ring-destructive' : ''}`}
+                  onKeyPress={(e) => e.key === "Enter" && handleAnalyze()}
+                />
+                {urlError && (
+                  <div className="mt-2 text-sm text-destructive">
+                    <p className="font-medium">{urlError.error}</p>
+                    {urlError.suggestion && (
+                      <p className="text-xs text-muted-foreground mt-1">
+                        {urlError.suggestion}
+                      </p>
+                    )}
+                  </div>
+                )}
+              </div>
               <Button
                 onClick={handleAnalyze}
                 disabled={analyzing || !repoUrl.trim()}
