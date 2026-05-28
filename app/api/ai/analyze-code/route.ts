@@ -1,31 +1,34 @@
 import { NextRequest, NextResponse } from "next/server";
-import { isHttpError, requireAuth } from "@/lib/middleware";
+import { isHttpError, requireAuth, sanitizeError } from "@/lib/middleware";
 import { getGeminiService } from "@/lib/services/geminiService";
+import { createRateLimiter } from "@/lib/utils/ipRateLimit";
+import {
+  validateContentType,
+  AI_REQUEST_LIMITS,
+} from "@/lib/utils/aiRequestValidation";
+
+const codeAnalysisLimiter = createRateLimiter({ windowMs: 60_000, maxRequests: 20 });
 
 export async function POST(request: NextRequest) {
   try {
-    await requireAuth(request);
+    const user = await requireAuth(request);
+
+    if (!codeAnalysisLimiter.check(String(user.userId))) {
+      return NextResponse.json(
+        { error: "Too many requests. Please wait before retrying." },
+        { status: 429 }
+      );
+    }
+
+    const contentTypeError = validateContentType(request);
+    if (contentTypeError) return contentTypeError;
+
     const body = await request.json();
     const { code, language, analysisType, context } = body;
 
-    if (typeof code !== "string" || !code.trim()) {
+    if (!code || !language || !analysisType) {
       return NextResponse.json(
-        { error: "Code must be a non-empty string" },
-        { status: 400 }
-      );
-    }
-
-    if (typeof language !== "string" || !language.trim()) {
-      return NextResponse.json(
-        { error: "Language must be a non-empty string" },
-        { status: 400 }
-      );
-    }
-
-    const validAnalysisTypes = ["explain", "improve", "bugs", "document", "refactor"];
-    if (typeof analysisType !== "string" || !validAnalysisTypes.includes(analysisType)) {
-      return NextResponse.json(
-        { error: `Analysis type must be one of: ${validAnalysisTypes.join(", ")}` },
+        { error: "Code, language, and analysis type are required" },
         { status: 400 }
       );
     }
@@ -37,16 +40,25 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    if (context && typeof context === "string" && context.length > AI_REQUEST_LIMITS.MAX_CONTEXT_CHARS) {
+      return NextResponse.json(
+        {
+          error: `Context too long (max ${AI_REQUEST_LIMITS.MAX_CONTEXT_CHARS} characters)`,
+        },
+        { status: 400 }
+      );
+    }
+
     const analysis = await getGeminiService().analyzeCode({
       code,
       language,
-      analysisType: analysisType as "explain" | "improve" | "bugs" | "document" | "refactor",
+      analysisType,
       context,
     });
 
     return NextResponse.json({ analysis, analysisType });
   } catch (error: any) {
-    console.error("Code analysis error:", error);
+    console.error("Code analysis error:", sanitizeError(error));
     if (isHttpError(error)) {
       return NextResponse.json(
         { error: error.message },

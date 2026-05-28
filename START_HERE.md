@@ -1,17 +1,26 @@
 # 🎉 Migration Complete - Quick Reference
 
-## Your New Project Location
+## Project Location
 
+📁 Navigate to the directory where you cloned the project
+
+Example:
+
+```bash
+/path/to/gitverse-nextjs
 ```
-📁 /home/time_walker/projects/projects/gitverse/gitverse-nextjs/
-```
+
+## System Requirements
+
+- **Node.js 22.x** is required. See [Supported Node Version](README.md#supported-node-version) in README for details.
 
 ## Immediate Next Steps
 
 ### 1. Open in VS Code
 
 ```bash
-code /home/time_walker/projects/projects/gitverse/gitverse-nextjs
+cd gitverse-nextjs
+code .
 ```
 
 ### 2. Install Dependencies (if not already done)
@@ -235,29 +244,12 @@ git push origin main
 ## Need Help?
 
 1. Check the documentation files above
-2. Review the original project in `../gitverse/`
+2. Review the original project repository if needed
 3. Check Next.js docs: https://nextjs.org/docs
 4. Review Prisma docs: https://prisma.io/docs
 
 ---
-## Validation Notes
 
-The AI API routes validate request inputs before processing.
-
-Invalid requests return a `400 Bad Request` response with a helpful error message instead of exposing stack traces.
-
-Examples:
-- Empty or missing `code`
-- Empty or missing `language`
-- Unsupported `analysisType`
-- Oversized code snippets
-
-Example response:
-
-```json
-{
-  "error": "Code must be a non-empty string"
-}
 ## 🚀 You're All Set!
 
 Your project has been successfully migrated to Next.js with:
