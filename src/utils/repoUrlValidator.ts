@@ -145,7 +145,8 @@ function parseHttpsUrl(url: string): ParsedRepoUrl | null {
     let urlToParse = url;
     if (!urlToParse.startsWith('http://') && !urlToParse.startsWith('https://')) {
       // Check if it looks like it could be a URL without protocol
-      const domainPattern = /^(github\.com|gitlab\.com|bitbucket\.org)\/[\w-]+\/[\w.-]+/i;
+      // Support various formats: github.com/owner/repo, www.github.com/owner/repo
+      const domainPattern = /^(github\.com|gitlab\.com|bitbucket\.org|www\.github\.com|www\.gitlab\.com|www\.bitbucket\.org)\/[\w-]+\/[\w.-]+/i;
       if (domainPattern.test(urlToParse)) {
         urlToParse = 'https://' + urlToParse;
       } else {
@@ -159,8 +160,9 @@ function parseHttpsUrl(url: string): ParsedRepoUrl | null {
 
     if (!platform) return null;
 
-    // Extract owner/repo from path
-    const pathParts = parsedUrl.pathname.replace(/\.git$/, '').split('/').filter(Boolean);
+    // Extract owner/repo from path - remove trailing slashes first, then .git suffix
+    const cleanedPath = parsedUrl.pathname.replace(/\/+$/, '').replace(/\.git$/, '');
+    const pathParts = cleanedPath.split('/').filter(Boolean);
 
     if (pathParts.length < 2) return null;
 

@@ -165,6 +165,42 @@ async function runTests(): Promise<void> {
     },
   });
 
+  runTest({
+    name: "URL with trailing slash",
+    url: "https://github.com/owner/repo/",
+    expectedValid: true,
+    expectedParsed: {
+      normalizedUrl: "https://github.com/owner/repo",
+    },
+  });
+
+  runTest({
+    name: "URL with multiple trailing slashes",
+    url: "https://github.com/owner/repo///",
+    expectedValid: true,
+    expectedParsed: {
+      normalizedUrl: "https://github.com/owner/repo",
+    },
+  });
+
+  runTest({
+    name: "URL with .git and trailing slash",
+    url: "https://github.com/owner/repo.git/",
+    expectedValid: true,
+    expectedParsed: {
+      normalizedUrl: "https://github.com/owner/repo",
+    },
+  });
+
+  runTest({
+    name: "URL with www prefix without protocol",
+    url: "www.github.com/owner/repo",
+    expectedValid: true,
+    expectedParsed: {
+      normalizedUrl: "https://github.com/owner/repo",
+    },
+  });
+
   // Valid SSH URLs
   console.log("\n" + "─".repeat(40));
   console.log("Valid SSH URLs");
