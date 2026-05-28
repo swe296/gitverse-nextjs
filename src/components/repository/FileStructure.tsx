@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   ChevronRight,
   ChevronDown,
@@ -10,6 +10,7 @@ import {
   BarChart3,
   Code,
   Clock,
+  Sparkles,
 } from "lucide-react";
 import {
   Card,
@@ -17,28 +18,59 @@ import {
   CardTitle,
   CardDescription,
   CardContent,
-  EmptyState,
+  Modal,
+  Skeleton,
 } from "@/components/ui";
+import { useToast } from "@/hooks/use-toast";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+import { buildApiUrl } from "@/services/apiConfig";
+
+interface FileData {
+  name: string;
+  path: string;
+  size?: number;
+  extension?: string;
+  language?: string;
+  lines?: number;
+  createdAt?: string;
+}
+
+interface FileStats {
+  path: string;
+  commitCount: number;
+  additions: number;
+  deletions: number;
+}
+
+interface RepositoryData {
+  id?: number;
+  name?: string;
+  url?: string;
+  files?: FileData[];
+}
 
 interface FileNode {
   name: string;
   type: "file" | "folder";
   path: string;
   size?: number;
-  fileData?: any; // Reference to the actual file object from repository
+  fileData?: FileData; // Reference to the actual file object from repository
   children?: FileNode[];
 }
 
 interface FileTreeProps {
   node: FileNode;
   level?: number;
-  onFileSelect?: (fileData: any) => void;
+  onFileSelect?: (fileData: FileData) => void;
+  onExplainSelect?: (filePath: string) => void;
 }
 
 const FileTreeNode: React.FC<FileTreeProps> = ({
   node,
   level = 0,
   onFileSelect,
+  onExplainSelect,
 }) => {
   const [isExpanded, setIsExpanded] = useState(level === 0);
 
@@ -76,7 +108,7 @@ const FileTreeNode: React.FC<FileTreeProps> = ({
   return (
     <div>
       <div
-        className={`flex items-center gap-2 py-1 px-2 rounded cursor-pointer hover:bg-accent/50 transition-colors`}
+        className={`flex items-center gap-2 py-1 px-2 rounded cursor-pointer hover:bg-accent/50 transition-colors group relative`}
         style={{ paddingLeft: `${level * 1.5 + 0.5}rem` }}
         onClick={handleToggle}
       >
@@ -98,11 +130,23 @@ const FileTreeNode: React.FC<FileTreeProps> = ({
         ) : (
           getFileIcon(node.name)
         )}
-        <span className="text-sm flex-1">{node.name}</span>
+        <span className="text-sm flex-1 truncate">{node.name}</span>
         {node.type === "file" && node.size && (
-          <span className="text-xs text-muted-foreground">
+          <span className="text-xs text-muted-foreground mr-1">
             {formatBytes(node.size)}
           </span>
+        )}
+        {node.type === "file" && onExplainSelect && (
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onExplainSelect(node.path);
+            }}
+            title="Explain this file with AI"
+            className="p-1 rounded text-primary hover:bg-primary/20 transition-all opacity-0 group-hover:opacity-100"
+          >
+            <Sparkles className="h-3.5 w-3.5" />
+          </button>
         )}
       </div>
       {node.type === "folder" && isExpanded && node.children && (
@@ -113,6 +157,7 @@ const FileTreeNode: React.FC<FileTreeProps> = ({
               node={child}
               level={level + 1}
               onFileSelect={onFileSelect}
+              onExplainSelect={onExplainSelect}
             />
           ))}
         </div>
@@ -130,14 +175,70 @@ const formatBytes = (bytes: number): string => {
 };
 
 interface FileStructureProps {
-  repository?: any;
+  repository?: RepositoryData;
 }
 
 export const FileStructure = ({ repository }: FileStructureProps) => {
-  const [selectedFile, setSelectedFile] = useState<any | null>(null);
+  const { toast } = useToast();
+  const [selectedFile, setSelectedFile] = useState<FileData | null>(null);
+  const [fileStatsByPath, setFileStatsByPath] = useState<
+    Record<string, FileStats>
+  >({});
+  const [fileStatsLoading, setFileStatsLoading] = useState(false);
+
+  // AI Explain File State
+  const [explainingFilePath, setExplainingFilePath] = useState<string | null>(null);
+  const [explanation, setExplanation] = useState<string | null>(null);
+  const [explanationLoading, setExplanationLoading] = useState(false);
+  const [isExplanationOpen, setIsExplanationOpen] = useState(false);
+
+  const handleExplainSelect = async (filePath: string) => {
+    setExplainingFilePath(filePath);
+    setExplanation(null);
+    setExplanationLoading(true);
+    setIsExplanationOpen(true);
+
+    try {
+      const token =
+        typeof window !== "undefined"
+          ? localStorage.getItem("gitverse_token")
+          : null;
+      
+      const response = await fetch(buildApiUrl("/api/ai/explain-file"), {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({
+          repoUrl: repository?.url,
+          filePath,
+          repositoryId: repository?.id,
+        }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || "Failed to get file explanation");
+      }
+
+      setExplanation(data.explanation);
+    } catch (error: any) {
+      console.error("AI Explain File Error:", error);
+      setIsExplanationOpen(false);
+      toast({
+        title: "AI Explanation Failed",
+        description: error.message || "An unexpected error occurred while generating explanation.",
+        variant: "destructive",
+      });
+    } finally {
+      setExplanationLoading(false);
+    }
+  };
 
   // Build file tree from repository files
-  const buildFileTree = (files: any[]): FileNode => {
+  const buildFileTree = (files: FileData[]): FileNode => {
     const root: FileNode = {
       name: repository?.name || "root",
       type: "folder",
@@ -145,7 +246,7 @@ export const FileStructure = ({ repository }: FileStructureProps) => {
       children: [],
     };
 
-    files?.forEach((file: any) => {
+    files?.forEach((file: FileData) => {
       const parts = file.path.split("/").filter(Boolean);
       let current = root;
 
@@ -175,63 +276,115 @@ export const FileStructure = ({ repository }: FileStructureProps) => {
     return root;
   };
 
-  const fileTree = buildFileTree(repository?.files || []);
+  const files = useMemo(() => repository?.files || [], [repository?.files]);
+  const fileTree = useMemo(() => buildFileTree(files), [files, repository?.name]);
 
-  const handleFileSelect = (fileData: any) => {
+  useEffect(() => {
+    if (!repository?.id || files.length === 0) {
+      setFileStatsByPath({});
+      setFileStatsLoading(false);
+      return;
+    }
+
+    const controller = new AbortController();
+
+    const fetchFileStats = async () => {
+      setFileStatsLoading(true);
+
+      try {
+        const token =
+          typeof window !== "undefined"
+            ? localStorage.getItem("gitverse_token")
+            : null;
+        const response = await fetch(
+          buildApiUrl(`/api/repositories/${repository.id}/files/stats`),
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              ...(token ? { Authorization: `Bearer ${token}` } : {}),
+            },
+            body: JSON.stringify({ paths: files.map((file) => file.path) }),
+            signal: controller.signal,
+          }
+        );
+
+        if (!response.ok) {
+          throw new Error("Failed to load file statistics");
+        }
+
+        const data = await response.json();
+        const nextStats = (data.stats || []).reduce(
+          (acc: Record<string, FileStats>, stat: FileStats) => {
+            acc[stat.path] = stat;
+            return acc;
+          },
+          {}
+        );
+
+        setFileStatsByPath(nextStats);
+      } catch (error: any) {
+        if (error.name !== "AbortError") {
+          console.error("Error fetching file statistics:", error);
+          setFileStatsByPath({});
+        }
+      } finally {
+        if (!controller.signal.aborted) {
+          setFileStatsLoading(false);
+        }
+      }
+    };
+
+    fetchFileStats();
+
+    return () => controller.abort();
+  }, [files, repository?.id]);
+
+  const handleFileSelect = (fileData: FileData) => {
     setSelectedFile(fileData);
   };
 
-  // Count commits for a specific file
-  const getFileCommitCount = (filePath: string): number => {
+  const getFileStats = (filePath: string): FileStats => {
     return (
-      repository?.commits?.reduce((count: number, commit: any) => {
-        const fileChanged = commit.fileChanges?.some(
-          (fc: any) => fc.path === filePath
-        );
-        return fileChanged ? count + 1 : count;
-      }, 0) || 0
+      fileStatsByPath[filePath] || {
+        path: filePath,
+        commitCount: 0,
+        additions: 0,
+        deletions: 0,
+      }
     );
   };
 
-  // Get file changes stats
-  const getFileChangeStats = (filePath: string) => {
-    let additions = 0;
-    let deletions = 0;
-    repository?.commits?.forEach((commit: any) => {
-      commit.fileChanges?.forEach((change: any) => {
-        if (change.path === filePath) {
-          additions += change.additions || 0;
-          deletions += change.deletions || 0;
-        }
-      });
-    });
-    return { additions, deletions };
-  };
+  const selectedFileStats = selectedFile
+    ? getFileStats(selectedFile.path)
+    : null;
+  const selectedFileTotalChanges = selectedFileStats
+    ? selectedFileStats.additions + selectedFileStats.deletions
+    : 0;
+  const selectedFileNetChange = selectedFileStats
+    ? selectedFileStats.additions - selectedFileStats.deletions
+    : 0;
 
   return (
     <div className="space-y-4">
-      {!repository?.files || repository.files.length === 0 ? (
-        <EmptyState
-          icon={Folder}
-          title="No files found"
-          description="We couldn't find any files in this repository."
-        />
-      ) : (
-        <Card className="glass">
-          <CardHeader>
-            <CardTitle className="font-heading">File Structure</CardTitle>
-            <CardDescription>
-              Explore the repository&apos;s file system
-            </CardDescription>
-            <CardDescription>*Click on a file for more info*</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <div className="border border-border/50 rounded-lg p-4 bg-background/50 max-h-[600px] overflow-y-auto">
-              <FileTreeNode node={fileTree} onFileSelect={handleFileSelect} />
-            </div>
-          </CardContent>
-        </Card>
-      )}
+      <Card className="glass">
+        <CardHeader>
+          <CardTitle className="font-heading">File Structure</CardTitle>
+          <CardDescription>
+            Explore the repository&apos;s file system
+          </CardDescription>
+          <CardDescription>*Click on a file for more info*</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div className="border border-border/50 rounded-lg p-4 bg-background/50 max-h-[600px] overflow-y-auto">
+            <FileTreeNode
+              node={fileTree}
+              onFileSelect={handleFileSelect}
+              onExplainSelect={handleExplainSelect}
+            />
+          </div>
+        </CardContent>
+      </Card>
 
       {/* File Analytics Modal */}
       {selectedFile && (
@@ -304,7 +457,9 @@ export const FileStructure = ({ repository }: FileStructureProps) => {
                   </span>
                 </div>
                 <p className="text-3xl font-bold">
-                  {getFileCommitCount(selectedFile.path)}
+                  {fileStatsLoading
+                    ? "..."
+                    : selectedFileStats?.commitCount.toLocaleString() || 0}
                 </p>
               </div>
 
@@ -338,9 +493,9 @@ export const FileStructure = ({ repository }: FileStructureProps) => {
                       </p>
                       <p className="text-2xl font-bold text-green-400">
                         +
-                        {getFileChangeStats(
-                          selectedFile.path
-                        ).additions.toLocaleString()}
+                        {fileStatsLoading
+                          ? "..."
+                          : selectedFileStats?.additions.toLocaleString() || 0}
                       </p>
                     </div>
                     <p className="text-xs text-muted-foreground">
@@ -355,9 +510,9 @@ export const FileStructure = ({ repository }: FileStructureProps) => {
                       </p>
                       <p className="text-2xl font-bold text-red-400">
                         -
-                        {getFileChangeStats(
-                          selectedFile.path
-                        ).deletions.toLocaleString()}
+                        {fileStatsLoading
+                          ? "..."
+                          : selectedFileStats?.deletions.toLocaleString() || 0}
                       </p>
                     </div>
                     <p className="text-xs text-muted-foreground">
@@ -371,17 +526,15 @@ export const FileStructure = ({ repository }: FileStructureProps) => {
                         Net Change
                       </p>
                       <p
-                        className={`text-2xl font-bold ${getFileChangeStats(selectedFile.path).additions - getFileChangeStats(selectedFile.path).deletions >= 0 ? "text-green-400" : "text-red-400"}`}
+                        className={`text-2xl font-bold ${
+                          selectedFileNetChange >= 0
+                            ? "text-green-400"
+                            : "text-red-400"
+                        }`}
                       >
-                        {getFileChangeStats(selectedFile.path).additions -
-                          getFileChangeStats(selectedFile.path).deletions >=
-                        0
-                          ? "+"
-                          : ""}
-                        {(
-                          getFileChangeStats(selectedFile.path).additions -
-                          getFileChangeStats(selectedFile.path).deletions
-                        ).toLocaleString()}
+                        {fileStatsLoading
+                          ? "..."
+                          : `${selectedFileNetChange >= 0 ? "+" : ""}${selectedFileNetChange.toLocaleString()}`}
                       </p>
                     </div>
                     <p className="text-xs text-muted-foreground">
@@ -404,11 +557,10 @@ export const FileStructure = ({ repository }: FileStructureProps) => {
                       Changes per Commit
                     </p>
                     <p className="text-2xl font-bold">
-                      {getFileCommitCount(selectedFile.path) > 0
+                      {!fileStatsLoading && selectedFileStats?.commitCount
                         ? Math.round(
-                            (getFileChangeStats(selectedFile.path).additions +
-                              getFileChangeStats(selectedFile.path).deletions) /
-                              getFileCommitCount(selectedFile.path)
+                            selectedFileTotalChanges /
+                              selectedFileStats.commitCount
                           )
                         : 0}
                     </p>
@@ -422,14 +574,10 @@ export const FileStructure = ({ repository }: FileStructureProps) => {
                       Churn Ratio
                     </p>
                     <p className="text-2xl font-bold">
-                      {getFileChangeStats(selectedFile.path).additions +
-                        getFileChangeStats(selectedFile.path).deletions >
-                      0
+                      {!fileStatsLoading && selectedFileTotalChanges > 0
                         ? (
-                            (getFileChangeStats(selectedFile.path).deletions /
-                              (getFileChangeStats(selectedFile.path).additions +
-                                getFileChangeStats(selectedFile.path)
-                                  .deletions)) *
+                            ((selectedFileStats?.deletions || 0) /
+                              selectedFileTotalChanges) *
                             100
                           ).toFixed(1)
                         : 0}
@@ -476,8 +624,10 @@ export const FileStructure = ({ repository }: FileStructureProps) => {
                     Total Modifications
                   </p>
                   <p className="text-lg font-semibold">
-                    {getFileCommitCount(selectedFile.path)}{" "}
-                    {getFileCommitCount(selectedFile.path) === 1
+                    {fileStatsLoading
+                      ? "..."
+                      : selectedFileStats?.commitCount.toLocaleString() || 0}{" "}
+                    {selectedFileStats?.commitCount === 1
                       ? "commit"
                       : "commits"}
                   </p>
@@ -487,10 +637,9 @@ export const FileStructure = ({ repository }: FileStructureProps) => {
                     Impact
                   </p>
                   <p className="text-lg font-semibold">
-                    {(
-                      getFileChangeStats(selectedFile.path).additions +
-                      getFileChangeStats(selectedFile.path).deletions
-                    ).toLocaleString()}{" "}
+                    {fileStatsLoading
+                      ? "..."
+                      : selectedFileTotalChanges.toLocaleString()}{" "}
                     changes
                   </p>
                 </div>
@@ -507,6 +656,62 @@ export const FileStructure = ({ repository }: FileStructureProps) => {
           </Card>
         </div>
       )}
+
+      {/* AI Explanation Modal */}
+      <Modal
+        isOpen={isExplanationOpen}
+        onClose={() => setIsExplanationOpen(false)}
+        size="lg"
+        title="AI File Explanation"
+      >
+        <div className="space-y-4">
+          <div className="flex items-center gap-3 border-b border-border/40 pb-3">
+            <div className="p-2 rounded-lg bg-primary/10">
+              <Sparkles className="h-5 w-5 text-primary animate-pulse" />
+            </div>
+            <div className="min-w-0 flex-1">
+              <h4 className="text-sm font-semibold truncate text-foreground">
+                {explainingFilePath?.split("/").pop()}
+              </h4>
+              <p className="text-xs text-muted-foreground font-mono truncate">
+                {explainingFilePath}
+              </p>
+            </div>
+          </div>
+
+          {explanationLoading ? (
+            <div className="space-y-3 py-4 animate-pulse">
+              <Skeleton className="h-4 w-3/4 bg-foreground/10" />
+              <Skeleton className="h-4 w-5/6 bg-foreground/10" />
+              <Skeleton className="h-4 w-2/3 bg-foreground/10" />
+              <div className="pt-4 space-y-3">
+                <Skeleton className="h-4 w-4/5 bg-foreground/10" />
+                <Skeleton className="h-4 w-11/12 bg-foreground/10" />
+                <Skeleton className="h-4 w-3/4 bg-foreground/10" />
+              </div>
+            </div>
+          ) : explanation ? (
+            <div className="prose prose-sm dark:prose-invert max-h-[50vh] overflow-y-auto pr-2 text-foreground/90 leading-relaxed text-sm bg-accent/10 border border-border/30 rounded-lg p-4">
+              <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                {explanation}
+              </ReactMarkdown>
+            </div>
+          ) : (
+            <p className="text-sm text-muted-foreground">
+              No explanation available.
+            </p>
+          )}
+
+          <div className="flex justify-end gap-2 border-t border-border/40 pt-4">
+            <button
+              onClick={() => setIsExplanationOpen(false)}
+              className="px-4 py-2 text-sm font-medium border border-border/50 hover:bg-accent/50 rounded-lg transition-all text-foreground bg-background"
+            >
+              Close
+            </button>
+          </div>
+        </div>
+      </Modal>
     </div>
   );
 };

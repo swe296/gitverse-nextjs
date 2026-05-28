@@ -26,10 +26,13 @@ import {
   Trash2,
   Activity,
   Copy,
+  CheckCircle2,
+  Clock,
+  Loader2,
+  XCircle,
 } from "lucide-react";
 
 import { useToast } from "@/hooks/use-toast";
-import { EmptyState } from "@/components/ui";
 import { buildApiUrl } from "@/services/apiConfig";
 // Local fallback skeleton UI (avoids missing import)
 const RepositoryAnalysisSkeleton: React.FC = () => {
@@ -50,6 +53,7 @@ const ANALYSIS_TIMEOUT_MS = 8 * 60 * 1000;
 const POLL_INTERVAL_INITIAL_MS = 2000;
 const POLL_INTERVAL_MAX_MS = 5000;
 const POLL_INTERVAL_STEP_MS = 500;
+import { Modal } from "@/components/ui/Modal";
 
 type TabType =
   | "overview"
@@ -69,10 +73,60 @@ const tabs: Tab[] = [
   { id: "overview", label: "Overview", icon: <Home className="h-4 w-4" /> },
   { id: "files", label: "Files", icon: <FolderTree className="h-4 w-4" /> },
   { id: "commits", label: "Commits", icon: <GitCommit className="h-4 w-4" /> },
-  { id: "contributors", label: "Contributors", icon: <Users className="h-4 w-4" /> },
-  { id: "mentor", label: "AI Mentor", icon: <Sparkles className="h-4 w-4" /> },
-  { id: "insights", label: "Insights", icon: <BarChart3 className="h-4 w-4" /> },
+  {
+    id: "contributors",
+    label: "Contributors",
+    icon: <Users className="h-4 w-4" />,
+  },
+  {
+    id: "mentor",
+    label: "AI Mentor",
+    icon: <Sparkles className="h-4 w-4" />,
+  },
+  {
+    id: "insights",
+    label: "Insights",
+    icon: <BarChart3 className="h-4 w-4" />,
+  },
 ];
+
+const StatusBadge = ({ status, isAnalyzing }: { status: string; isAnalyzing: boolean }) => {
+  const s = status?.toLowerCase() || "pending";
+
+  if (isAnalyzing || s === "analyzing" || s === "processing") {
+    return (
+      <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-amber-500/10 text-amber-500 border border-amber-500/20 animate-pulse">
+        <Loader2 className="h-3 w-3 animate-spin" />
+        Analyzing
+      </span>
+    );
+  }
+
+  if (s === "completed" || s === "done" || s === "ready") {
+    return (
+      <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-emerald-500/10 text-emerald-500 border border-emerald-500/20">
+        <CheckCircle2 className="h-3 w-3" />
+        Completed
+      </span>
+    );
+  }
+
+  if (s === "failed" || s === "error") {
+    return (
+      <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-red-500/10 text-red-500 border border-red-500/20">
+        <XCircle className="h-3 w-3" />
+        Failed
+      </span>
+    );
+  }
+
+  return (
+    <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-amber-500/10 text-amber-500 border border-amber-500/20">
+      <Clock className="h-3 w-3" />
+      Pending
+    </span>
+  );
+};
 
 export default function RepositoryAnalysis() {
   const params = useParams();
@@ -80,7 +134,6 @@ export default function RepositoryAnalysis() {
 
   const router = useRouter();
   const { toast } = useToast();
-
   const [activeTab, setActiveTab] = useState<TabType>("overview");
   const [repository, setRepository] = useState<any>(null);
   const [loading, setLoading] = useState(true);
@@ -89,6 +142,8 @@ export default function RepositoryAnalysis() {
 
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const pollingJobRef = useRef<string | null>(null);
 
   // âœ… ERROR STATE (improved usage)
   const [error, setError] = useState<string | null>(null);
@@ -132,30 +187,35 @@ export default function RepositoryAnalysis() {
 
     const repoStatus = repository?.status;
     const jobStatus = job?.status;
+  useEffect(() => {
+    // Guard against dual-polling when the dependency array changes mid-cycle.
+    const jobId = job?.id || repository?.latestJob?.id;
+    if (!jobId) return;
 
-    const shouldAnalyze =
+    if (pollingJobRef.current !== jobId) {
+      pollingJobRef.current = jobId;
+    } else {
+      // Same jobId triggered a re-run; bail to avoid stacking loops.
+      return;
+    }
+
+    const repoStatus = repository?.status as string | undefined;
+    const jobStatus = job?.status as string | undefined;
+
+    const shouldShowAnalyzing =
       repoStatus === "pending" ||
       repoStatus === "analyzing" ||
       jobStatus === "QUEUED" ||
       jobStatus === "PROCESSING";
 
-    setIsAnalyzing(Boolean(shouldAnalyze));
+    setIsAnalyzing(Boolean(shouldShowAnalyzing));
 
-    const jobId = job?.id || repository?.latestJob?.id;
-    if (!jobId) return;
     if (jobStatus === "DONE" || jobStatus === "FAILED") return;
-    if (analysisTimedOut) return;
-
-    // Record when we started polling (only once per analysis)
-    if (!pollingStartedAt.current) {
-      pollingStartedAt.current = Date.now();
-    }
-    if (!lastProgressAt.current) {
-      lastProgressAt.current = Date.now();
-    }
 
     let stopped = false;
-    let intervalMs = POLL_INTERVAL_INITIAL_MS;
+    let intervalMs = 2000;
+    let retries = 0;
+    const MAX_RETRIES = 60;
 
     const poll = async () => {
       if (stopped) return;
@@ -172,15 +232,17 @@ export default function RepositoryAnalysis() {
           "Analysis has been queued for over 8 minutes without progress. " +
           "The background worker may not be running. Please try again later " +
           "or contact the maintainer."
+      if (retries >= MAX_RETRIES) {
+        setError(
+          "Analysis is taking longer than expected. The job may still be processing — check back later."
         );
         return;
       }
-
+      retries++;
       await fetchJob(jobId);
       if (stopped) return;
-
       setTimeout(poll, intervalMs);
-      intervalMs = Math.min(POLL_INTERVAL_MAX_MS, intervalMs + POLL_INTERVAL_STEP_MS);
+      intervalMs = Math.min(5000, intervalMs + 500);
     };
 
     poll();
@@ -188,14 +250,16 @@ export default function RepositoryAnalysis() {
     return () => {
       stopped = true;
     };
-  // analysisTimedOut included so Check Again restarts polling
-  }, [repository?.status, repository?.latestJob?.id, job?.id, job?.status, analysisTimedOut]);
+  }, [repository?.status, repository?.latestJob?.id, job?.id, job?.status]);
 
   // â”€â”€ Data fetchers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const fetchRepository = async () => {
     if (!id) return;
 
     setError(null); // âœ… reset error on retry
+  const fetchRepository = async () => {
+    if (!id) return;
+    setError(null);
 
     try {
       const token = localStorage.getItem("gitverse_token");
@@ -209,8 +273,17 @@ export default function RepositoryAnalysis() {
 
       const repo = response.data.repository || response.data;
       setRepository(repo);
+
+      const repoStatus = repo?.status?.toLowerCase();
+      if (repoStatus === "failed" || repoStatus === "error") {
+        setError(repo?.error || "Analysis failed. Please try again later.");
+      }
+
       if (response.data.latestJob) {
         setJob(response.data.latestJob);
+        if (response.data.latestJob.status === "FAILED") {
+          setError(response.data.latestJob.error || "Analysis failed. Please try again later.");
+        }
       }
     } catch (error: any) {
       setError(
@@ -225,36 +298,51 @@ export default function RepositoryAnalysis() {
       });
     } finally {
       setLoading(false);
+    } catch (err: any) {
+      console.error("Error fetching repository:", err);
+
+      const isColdStart = err.response?.data?.error === "DATABASE_COLD_START";
+      
+      if (isColdStart) {
+        setError("Waking up database... Please wait.");
+        // Auto-retry in 3 seconds. Do not set loading to false so spinner stays.
+        setTimeout(fetchRepository, 3000);
+        return;
+      }
+
+      setError(
+        err.response?.data?.error ||
+          err.response?.data?.message ||
+          err.message ||
+          "Analysis failed. Please try again later."
+      );
+      toast({
+        title: "Error fetching repository",
+        description: err.response?.data?.error || err.response?.data?.message || err.message || "Failed to load repository data.",
+        variant: "destructive",
+      });
+      setLoading(false);
     }
   };
 
   const fetchJob = async (jobId: string) => {
     if (!jobId) return;
+
     try {
       const token = localStorage.getItem("gitverse_token");
 
       const response = await axios.get(
         buildApiUrl(`/api/analysis-jobs/${jobId}`),
-        { headers: { Authorization: `Bearer ${token}` } }
+        {
+          headers: { Authorization: `Bearer ${token}` },
+        },
       );
 
       const nextJob = response.data.job || response.data;
-      // Use functional setJob so we always compare against the latest job
-      // state, avoiding the stale-closure bug where the polling loop holds
-      // an old snapshot of job and never sees progress-only updates.
-      setJob((prevJob: any) => {
-        const prevPercent = prevJob?.progressPercent ?? null;
-        const prevMessage = prevJob?.progressMessage ?? null;
-        const nextPercent = nextJob?.progressPercent ?? null;
-        const nextMessage = nextJob?.progressMessage ?? null;
-        if (nextPercent !== prevPercent || nextMessage !== prevMessage) {
-          lastProgressAt.current = Date.now();
-        }
-        return nextJob;
-      });
+      setJob(nextJob);
 
       if (nextJob?.status === "DONE") {
-        pollingStartedAt.current = null;
+        // Job finished — refresh repository once to load results.
         await fetchRepository();
       }
 
@@ -276,6 +364,21 @@ export default function RepositoryAnalysis() {
       toast({
         title: "Error",
         description: "Failed to fetch analysis job status",
+    } catch (err: any) {
+      console.error("Error fetching analysis job:", err);
+      
+      const errorMessage = err.response?.data?.error || err.response?.data?.message || err.message || "Failed to connect to the analysis service.";
+      
+      // 1. Surface inline error state
+      setError(errorMessage);
+      
+      // 2. Stop polling
+      setIsAnalyzing(false);
+
+      // 3. Show a one-time toast notification
+      toast({
+        title: "Error checking analysis status",
+        description: err.response?.data?.error || err.response?.data?.message || err.message || "Failed to connect to the analysis service.",
         variant: "destructive",
       });
     }
@@ -285,21 +388,25 @@ export default function RepositoryAnalysis() {
   const handleDeleteRepository = async () => {
     if (!id) return;
     setIsDeleting(true);
+
     try {
       const token = localStorage.getItem("gitverse_token");
 
       await axios.delete(buildApiUrl(`/api/repositories/${id}`), {
         headers: { Authorization: `Bearer ${token}` },
       });
+
       toast({
         title: "Repository deleted",
         description: "The repository has been successfully deleted.",
       });
+
       router.push("/dashboard");
     } catch (error: any) {
       toast({
         title: "Error",
-        description: error.response?.data?.error || "Failed to delete repository",
+        description:
+          error.response?.data?.error || "Failed to delete repository",
         variant: "destructive",
       });
     } finally {
@@ -356,6 +463,10 @@ const formattedLastAnalyzed =
         timeStyle: "short",
       }).format(lastAnalyzedDate)
     : "Not available";
+        return <RepositoryOverview />;
+    }
+  };
+
   return (
     <DashboardLayout>
       <div className="space-y-6">
@@ -414,6 +525,42 @@ const formattedLastAnalyzed =
             <div className="flex flex-col sm:flex-row sm:items-center gap-3 sm:gap-4">
               <Link href="/dashboard" className="glass p-2 rounded-lg hover:bg-white/10">
                 <ArrowLeft className="h-4 w-4" />
+          <div className="glass rounded-lg p-12 text-center space-y-4">
+            <div className="flex justify-center">
+              <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-primary"></div>
+            </div>
+            <div>
+              <h3 className="font-semibold text-lg">Loading Repository</h3>
+              <p className="text-sm text-muted-foreground mt-1">
+                Fetching repository data and analysis results...
+              </p>
+            </div>
+          </div>
+        ) : !job && !error ? (
+          <div className="text-center py-12 flex flex-col items-center gap-4 animate-fade-in-up">
+            <Activity className="h-12 w-12 text-muted-foreground/50" />
+            <div>
+              <h3 className="font-semibold text-lg">No analysis jobs found</h3>
+              <p className="text-sm text-muted-foreground mt-1">
+                Run your first analysis to get started
+              </p>
+            </div>
+            <button
+              onClick={() => router.push("/dashboard")}
+              className="px-4 py-2 rounded-lg bg-primary text-primary-foreground hover:bg-primary/95 transition-all duration-300 text-sm font-medium"
+            >
+              Go to Dashboard
+            </button>
+          </div>
+        ) : (
+          <>
+            {/* Header with back button */}
+            <div className="flex flex-col sm:flex-row sm:items-center gap-3 sm:gap-4 animate-fade-in-up">
+              <Link
+                href="/dashboard"
+                className="glass p-2 rounded-lg hover:bg-white/10 transition-all duration-300 self-start"
+              >
+                <ArrowLeft className="h-4 w-4 sm:h-5 sm:w-5" />
               </Link>
 
               <div className="flex-1 min-w-0">
@@ -447,6 +594,27 @@ const formattedLastAnalyzed =
                 <span className="animate-pulse">â—</span>
                 Analyzing...
                 </span>
+                <h1 className="text-2xl sm:text-3xl font-bold truncate">
+                  {repository?.name || "Repository Analysis"}
+                </h1>
+                <p className="text-xs sm:text-sm text-muted-foreground mt-1 truncate">
+                  {repository?.url || ""}
+                </p>
+                <div className="flex flex-col gap-1 mt-2">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <StatusBadge
+                      status={
+                        error
+                          ? "failed"
+                          : repository?.status || job?.status || "pending"
+                      }
+                      isAnalyzing={isAnalyzing}
+                    />
+                  </div>
+                  {error && (
+                    <p className="text-xs sm:text-sm text-red-500 font-medium mt-1">
+                      {error}
+                    </p>
                   )}
               </div>
               <button
@@ -470,35 +638,37 @@ const formattedLastAnalyzed =
             {/* â”€â”€ Analyzing spinner (with timeout awareness) â”€â”€ */}
             {isAnalyzing && !analysisTimedOut ? (
               <div className="glass rounded-lg p-12 text-center space-y-6">
+              {/* Delete button only if repository exists */}
+              {repository && (
+                <button
+                  onClick={() => setShowDeleteDialog(true)}
+                  className="glass p-2 rounded-lg hover:bg-red-500/20 transition-all duration-300 text-red-500 hover:text-red-400 flex-shrink-0"
+                  title="Delete repository"
+                >
+                  <Trash2 className="h-4 w-4 sm:h-5 sm:w-5" />
+                </button>
+              )}
+            </div>
+
+            {isAnalyzing ? (
+              <div className="glass rounded-lg p-12 text-center space-y-4 animate-pulse">
                 <div className="flex justify-center">
-                  <div className="animate-spin rounded-full h-16 w-16 border-b-2 border-primary" />
+                  <div className="animate-spin rounded-full h-16 w-16 border-b-2 border-primary"></div>
                 </div>
                 <div>
-                  <h2 className="text-xl font-semibold mb-2">Analyzing Repository</h2>
+                  <h2 className="text-xl font-semibold mb-2">
+                    Analyzing Repository
+                  </h2>
                   <p className="text-muted-foreground">
-                    We&apos;re analyzing structure, commits, contributors, and more.
+                    We&apos;re analyzing the repository structure, commits,
+                    contributors, and more.
                   </p>
-
-                  {/* Progress bar */}
-                  <div className="mt-4 max-w-sm mx-auto">
-                    <div className="flex justify-between text-xs text-muted-foreground mb-1">
-                      <span>{progressMessage}</span>
-                      <span>{progressPercent}%</span>
-                    </div>
-                    <div className="w-full bg-white/10 rounded-full h-2">
-                      <div
-                        className="bg-primary h-2 rounded-full transition-all duration-500"
-                        style={{ width: `${Math.max(2, progressPercent)}%` }}
-                      />
-                    </div>
-                  </div>
-
-                  {/* Elapsed time */}
-                  <p className="text-xs text-muted-foreground mt-3 flex items-center justify-center gap-1">
-                    <Clock className="h-3 w-3" />
-                    {elapsedSeconds > 0
-                      ? `Running for ${formatElapsed(elapsedSeconds)}`
-                      : "Starting up..."}
+                  <p className="text-sm text-muted-foreground mt-2">
+                    {job?.progressPercent != null && job?.progressPercent >= 0
+                      ? `${Math.min(Math.round(job.progressPercent), 100)}%${job?.progressMessage ? ` — ${job.progressMessage}` : ""}`
+                      : job?.progressMessage
+                        ? job.progressMessage
+                        : "This may take a few moments depending on the repository size..."}
                   </p>
 
                   {/* Warn if queued too long (>60s with no progress) */}
@@ -513,7 +683,6 @@ const formattedLastAnalyzed =
                     </div>
                   )}
                 </div>
-
                 <div className="flex justify-center gap-4 text-sm text-muted-foreground">
                   <div className="flex items-center gap-2">
                     <GitCommit className="h-4 w-4" />
@@ -529,94 +698,36 @@ const formattedLastAnalyzed =
             ) : analysisTimedOut || analysisError ? (
               /* â”€â”€ Timeout / error state â”€â”€ */
               <div className="glass rounded-lg p-12 text-center space-y-6">
+            ) : error && !repository ? (
+              <div className="glass rounded-lg p-12 text-center space-y-4 animate-fade-in-up">
                 <div className="flex justify-center">
-                  <div className="p-4 rounded-full bg-red-500/10">
-                    <AlertCircle className="h-12 w-12 text-red-400" />
-                  </div>
+                  <XCircle className="h-12 w-12 text-red-500" />
                 </div>
                 <div>
-                  <h2 className="text-xl font-semibold mb-2 text-red-400">
-                    {analysisTimedOut ? "Analysis Timed Out" : "Analysis Failed"}
-                  </h2>
-                  <p className="text-muted-foreground max-w-md mx-auto text-sm">
-                    {analysisError}
+                  <h3 className="font-semibold text-lg text-red-500">Failed to Load Repository</h3>
+                  <p className="text-sm text-muted-foreground mt-1">
+                    {error}
                   </p>
                 </div>
-                <div className="flex justify-center gap-3">
-                  <button
-                    onClick={() => {
-                      setAnalysisTimedOut(false);
-                      setAnalysisError(null);
-                      pollingStartedAt.current = null;
-                      lastProgressAt.current = null;
-                      setElapsedSeconds(0);
-                      fetchRepository();
-                    }}
-                    className="flex items-center gap-2 px-4 py-2 rounded-lg glass hover:bg-white/10 transition-all duration-300 text-sm"
-                  >
-                    <RefreshCw className="h-4 w-4" />
-                    Check Again
-                  </button>
-                  <button
-                    onClick={() => router.push("/dashboard")}
-                    className="flex items-center gap-2 px-4 py-2 rounded-lg bg-primary hover:bg-primary/80 transition-all duration-300 text-sm"
-                  >
-                    <ArrowLeft className="h-4 w-4" />
-                    Back to Dashboard
-                  </button>
-                </div>
-              </div>
-
-            ) : repository &&
-              !repository.commits?.length &&
-              !repository.files?.length &&
-              !repository.languages?.length &&
-              !repository.contributors?.length ? (
-              /* ── Done but no data — show empty state ── */
-              <div className="glass rounded-lg p-12 text-center space-y-6">
-                <div className="flex justify-center">
-                  <div className="p-4 rounded-full bg-primary/10">
-                    <SearchX className="h-12 w-12 text-primary" />
-                  </div>
-                </div>
-                <div>
-                  <h2 className="text-xl font-semibold mb-2">
-                    No analysis data available
-                  </h2>
-                  <p className="text-muted-foreground max-w-md mx-auto text-sm">
-                    The analysis completed but didn&apos;t find any data.
-                    This can happen with empty repositories or when
-                    the analysis process encounters issues.
-                  </p>
-                </div>
-                <div className="flex justify-center gap-3">
-                  <button
-                    onClick={handleReAnalyze}
-                    className="flex items-center gap-2 px-4 py-2 rounded-lg glass hover:bg-white/10 transition-all duration-300 text-sm"
-                  >
-                    <RotateCcw className="h-4 w-4" />
-                    Re-analyze Repository
-                  </button>
-                  <button
-                    onClick={() => router.push("/dashboard")}
-                    className="flex items-center gap-2 px-4 py-2 rounded-lg bg-primary hover:bg-primary/80 transition-all duration-300 text-sm"
-                  >
-                    <ArrowLeft className="h-4 w-4" />
-                    Back to Dashboard
-                  </button>
-                </div>
+                <button
+                  onClick={() => fetchRepository()}
+                  className="px-4 py-2 rounded-lg bg-primary text-primary-foreground hover:bg-primary/95 transition-all duration-300 text-sm font-medium shadow-lg shadow-primary/25"
+                >
+                  Retry Loading
+                </button>
               </div>
             ) : (
               /* â”€â”€ Done â€” show tabs â”€â”€ */
               <>
-                <div className="glass rounded-lg p-2">
+                {/* Tab navigation */}
+                <div className="glass rounded-lg p-2 animate-fade-in-up">
                   <div className="flex gap-2 overflow-x-auto">
                     {tabs.map((tab) => (
                       <button
                         key={tab.id}
                         onClick={() => setActiveTab(tab.id)}
                         className={`
-                          flex items-center gap-2 px-4 py-2 rounded-lg font-medium transition-all duration-300 whitespace-nowrap
+                          flex items-center gap-1 sm:gap-2 px-2 sm:px-4 py-2 rounded-lg text-xs sm:text-sm font-medium transition-all duration-300 whitespace-nowrap w-full sm:w-auto justify-center
                           ${
                             activeTab === tab.id
                               ? "bg-primary text-primary-foreground shadow-lg shadow-primary/25"
@@ -630,6 +741,8 @@ const formattedLastAnalyzed =
                     ))}
                   </div>
                 </div>
+
+                {/* Content */}
                 <div className="animate-fade-in-up">{renderContent()}</div>
               </>
             )}
@@ -637,58 +750,57 @@ const formattedLastAnalyzed =
         )}
 
         {/* Delete Confirmation Dialog */}
-        {showDeleteDialog && (
-          <div
-            className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 z-50"
-            onClick={() => !isDeleting && setShowDeleteDialog(false)}
-          >
-            <div
-              className="glass max-w-md w-full p-4 sm:p-6 rounded-lg animate-fade-in-up"
-              onClick={(e) => e.stopPropagation()}
-            >
-              <div className="flex flex-col sm:flex-row sm:items-start gap-3 sm:gap-4 mb-4">
-                <div className="p-2 sm:p-3 rounded-lg bg-red-500/10 flex-shrink-0">
-                  <Trash2 className="h-5 w-5 sm:h-6 sm:w-6 text-red-500" />
-                </div>
-                <div className="flex-1 min-w-0">
-                  <h3 className="text-lg sm:text-xl font-bold mb-2">Delete Repository</h3>
-                  <p className="text-xs sm:text-sm text-muted-foreground">
-                    Are you sure you want to delete{" "}
-                    <strong className="break-words">{repository?.name}</strong>?
-                    This action cannot be undone and will permanently remove all
-                    repository data, including commits, contributors, and analysis results.
-                  </p>
-                </div>
-              </div>
-              <div className="flex flex-col-reverse sm:flex-row gap-2 sm:gap-3 justify-end">
-                <button
-                  onClick={() => setShowDeleteDialog(false)}
-                  disabled={isDeleting}
-                  className="px-3 sm:px-4 py-2 rounded-lg glass hover:bg-white/10 transition-all duration-300 disabled:opacity-50 text-sm"
-                >
-                  Cancel
-                </button>
-                <button
-                  onClick={handleDeleteRepository}
-                  disabled={isDeleting}
-                  className="px-3 sm:px-4 py-2 rounded-lg bg-red-500 hover:bg-red-600 transition-all duration-300 flex items-center justify-center gap-2 disabled:opacity-50 text-sm"
-                >
-                  {isDeleting ? (
-                    <>
-                      <div className="animate-spin rounded-full h-3 w-3 sm:h-4 sm:w-4 border-b-2 border-white" />
-                      Deleting...
-                    </>
-                  ) : (
-                    <>
-                      <Trash2 className="h-3 w-3 sm:h-4 sm:w-4" />
-                      Delete Repository
-                    </>
-                  )}
-                </button>
-              </div>
+        <Modal
+          isOpen={showDeleteDialog}
+          onClose={() => !isDeleting && setShowDeleteDialog(false)}
+          size="sm"
+        >
+          <div className="flex flex-col sm:flex-row sm:items-start gap-3 sm:gap-4 mb-4">
+            <div className="p-2 sm:p-3 rounded-lg bg-red-500/10 flex-shrink-0">
+              <Trash2 className="h-5 w-5 sm:h-6 sm:w-6 text-red-500" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <h3 className="text-lg sm:text-xl font-bold mb-2">
+                Delete Repository
+              </h3>
+              <p className="text-xs sm:text-sm text-muted-foreground">
+                Are you sure you want to delete{" "}
+                <strong className="break-words">{repository?.name}</strong>?
+                This action cannot be undone and will permanently remove all
+                repository data, including commits, contributors, and
+                analysis results.
+              </p>
             </div>
           </div>
-        )}
+
+          <div className="flex flex-col-reverse sm:flex-row gap-2 sm:gap-3 justify-end">
+            <button
+              onClick={() => setShowDeleteDialog(false)}
+              disabled={isDeleting}
+              className="px-3 sm:px-4 py-2 rounded-lg border border-secondary-200 dark:border-secondary-700 hover:bg-secondary-100 dark:hover:bg-secondary-800 transition-all duration-300 disabled:opacity-50 text-sm"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={handleDeleteRepository}
+              disabled={isDeleting}
+              className="px-3 sm:px-4 py-2 rounded-lg bg-red-500 hover:bg-red-600 transition-all duration-300 flex items-center justify-center gap-2 disabled:opacity-50 text-sm text-white"
+            >
+              {isDeleting ? (
+                <>
+                  <div className="animate-spin rounded-full h-3 w-3 sm:h-4 sm:w-4 border-b-2 border-white"></div>
+                  <span className="hidden sm:inline">Deleting...</span>
+                  <span className="sm:hidden">Deleting...</span>
+                </>
+              ) : (
+                <>
+                  <Trash2 className="h-3 w-3 sm:h-4 sm:w-4" />
+                  <span>Delete Repository</span>
+                </>
+              )}
+            </button>
+          </div>
+        </Modal>
       </div>
     </DashboardLayout>
   );

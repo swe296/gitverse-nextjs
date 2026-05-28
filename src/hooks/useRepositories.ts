@@ -1,16 +1,21 @@
 import { useState, useCallback, useEffect, useRef } from "react";
-import type { PaginatedResponse } from "@/types/pagination";
+import axios from "axios";
+import { buildApiUrl } from "@/services/apiConfig";
 
 export interface Repository {
   id: string;
   name: string;
-  fullName: string;
-  description: string | null;
-  language: string | null;
-  stars: number;
-  forks: number;
   url: string;
-  updatedAt: string;
+  description?: string;
+  language?: string;
+  lastAnalyzed?: string;
+  stars?: number;
+  commits?: number;
+  contributors?: number;
+  status?: "completed" | "processing" | "failed";
+  createdAt?: string;
+  updatedAt?: string;
+  [key: string]: any;
 }
 
 interface UseRepositoriesReturn {
@@ -19,81 +24,96 @@ interface UseRepositoriesReturn {
   isLoadingMore: boolean;
   hasMore: boolean;
   error: string | null;
-  loadMore: () => void;
-  refresh: () => void;
+  loadMore: () => Promise<void>;
+  refresh: () => Promise<void>;
 }
 
 const DEFAULT_LIMIT = 10;
 
 export function useRepositories({ limit = DEFAULT_LIMIT } = {}): UseRepositoriesReturn {
   const [repos, setRepos] = useState<Repository[]>([]);
-  const [cursor, setCursor] = useState<string | null>(null);
+  const [cursor, setCursor] = useState<number | undefined>(undefined);
   const [hasMore, setHasMore] = useState(true);
+  
   const [isLoading, setIsLoading] = useState(true);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [refreshKey, setRefreshKey] = useState(0);
 
-  useEffect(() => {
-    let cancelled = false;
-    setIsLoading(true);
+  const isFetchingRef = useRef<boolean>(false);
+  const initRef = useRef<boolean>(false);
+
+  const fetchRepos = useCallback(async (isLoadMore = false) => {
+    // Concurrency lock: Prevent duplicate requests
+    if (isFetchingRef.current) return;
+    
+    // Prevent loadMore if no more items
+    if (isLoadMore && !hasMore) return;
+
+    isFetchingRef.current = true;
+    
+    if (isLoadMore) {
+      setIsLoadingMore(true);
+    } else {
+      setIsLoading(true);
+    }
+    
     setError(null);
-    setRepos([]);
-    setCursor(null);
-    setHasMore(true);
 
-    fetch(`/api/repositories?limit=${limit}`)
-      .then((r) => {
-        if (!r.ok) throw new Error(`Request failed: ${r.status}`);
-        return r.json() as Promise<PaginatedResponse<Repository>>;
-      })
-      .then((json) => {
-        if (cancelled) return;
-        setRepos(json.data);
-        setCursor(json.nextCursor);
-        setHasMore(json.hasMore);
-      })
-      .catch((err: Error) => {
-        if (!cancelled) setError(err.message);
-      })
-      .finally(() => {
-        if (!cancelled) setIsLoading(false);
+    try {
+      const token = localStorage.getItem("gitverse_token");
+      const url = new URL(buildApiUrl("/api/repositories"));
+      url.searchParams.set("limit", limit.toString());
+      
+      if (isLoadMore && cursor !== undefined) {
+        url.searchParams.set("cursor", cursor.toString());
+      }
+
+      const response = await axios.get(url.toString(), {
+        headers: { Authorization: `Bearer ${token}` },
       });
 
-    return () => { cancelled = true; };
-  }, [limit, refreshKey]);
+      const { data, nextCursor, hasMore: newHasMore } = response.data;
+      
+      const newRepos = Array.isArray(data) ? data : [];
 
-  const loadMore = useCallback(() => {
-    if (!hasMore || isLoadingMoreRef.current || isLoading) return ;
-    setIsLoadingMore(true);
-    isLoadingMoreRef.current = true;
-    setError(null);
+      setRepos(prev => {
+        if (!isLoadMore) return newRepos;
+        
+        // Frontend Deduplication by ID
+        const existingIds = new Set(prev.map(r => r.id));
+        const deduplicatedNew = newRepos.filter((r: Repository) => !existingIds.has(r.id));
+        
+        return [...prev, ...deduplicatedNew];
+      });
 
-    const params = new URLSearchParams({ limit: String(limit) });
-    if (cursor) params.set("cursor", cursor);
+      setCursor(nextCursor);
+      setHasMore(newHasMore);
+    } catch (err: any) {
+      console.error("Error fetching repositories:", err);
+      setError(err.response?.data?.error || err.message || "Failed to fetch repositories.");
+    } finally {
+      setIsLoading(false);
+      setIsLoadingMore(false);
+      isFetchingRef.current = false;
+    }
+  }, [cursor, hasMore, limit]);
 
-    fetch(`/api/repositories?${params}`)
-      .then((r) => {
-        if (!r.ok) throw new Error(`Request failed: ${r.status}`);
-        return r.json() as Promise<PaginatedResponse<Repository>>;
-      })
-      .then((json) => {
-        setRepos((prev) => {
-          const seen = new Set(prev.map((r) => r.id));
-          const fresh = json.data.filter((r) => !seen.has(r.id));
-          return [...prev, ...fresh];
-        });
-        setCursor(json.nextCursor);
-        setHasMore(json.hasMore);
-      })
-      .catch((err: Error) => setError(err.message))
-      .finally(() => {
-  isLoadingMoreRef.current = false;
-  setIsLoadingMore(false);
-});
-  }, [cursor, hasMore, isLoading, isLoadingMore, limit]);
+  useEffect(() => {
+    if (!initRef.current) {
+      initRef.current = true;
+      fetchRepos();
+    }
+  }, [fetchRepos]);
 
-  const refresh = useCallback(() => setRefreshKey((k) => k + 1), []);
+  const loadMore = useCallback(async () => {
+    await fetchRepos(true);
+  }, [fetchRepos]);
+
+  const refresh = useCallback(async () => {
+    setCursor(undefined);
+    setHasMore(true);
+    await fetchRepos(false);
+  }, [fetchRepos]);
 
   return { repos, isLoading, isLoadingMore, hasMore, error, loadMore, refresh };
 }

@@ -1,29 +1,23 @@
 /**
- * Validates a GitHub repository identifier format (owner/repo).
- * Allowed format: alphanumeric, hyphens, underscores, and periods.
- * Max length: 150 characters to prevent DoS.
- * Prevents path traversal patterns like ../ or excessive slashes.
+ * Validates whether a given string is a strictly malformed or well-formed public GitHub repository URL.
+ * Matches:
+ * - https://github.com/owner/repo
+ * - http://github.com/owner/repo/
+ * - https://www.github.com/owner/repo.git
  */
-export function isValidRepositoryIdentifier(
-  identifier: string | null | undefined,
-): boolean {
-  if (!identifier || typeof identifier !== "string") return false;
+export function isValidGithubUrl(url: string): boolean {
+  if (!url || typeof url !== "string") return false;
+  
+  // Strict regex accounting for subdomains (www.), optional trailing slashes, and optional .git extensions.
+  const githubRegex = /^https?:\/\/(www\.)?github\.com\/[a-zA-Z0-9-._]+\/[a-zA-Z0-9-._]+(\.git)?\/?$/;
+  return githubRegex.test(url.trim());
+}
 
-  if (identifier.length > 150 || identifier.length < 3) return false;
-
-  // Strict regex: Owner/Repo (1 slash exactly)
-  // Each segment: 1 to 100 characters of [A-Za-z0-9_.-]
-  const regex = /^[A-Za-z0-9_.-]{1,100}\/[A-Za-z0-9_.-]{1,100}$/;
-  if (!regex.test(identifier)) return false;
-
-  // Additional check to prevent encoded traversals or direct traversal matches
-  if (
-    identifier.includes("..") ||
-    identifier.startsWith("/") ||
-    identifier.endsWith("/")
-  ) {
-    return false;
-  }
-
-  return true;
+/**
+ * Validates that a git scope/path contains only safe characters.
+ * Shell metacharacters (; | $ ` \ ' " ( ) { } < > & #) are rejected.
+ */
+export function isValidGitScope(value: string): boolean {
+  if (!value || typeof value !== "string") return false;
+  return /^[a-zA-Z0-9_./-]+$/.test(value);
 }

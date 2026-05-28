@@ -1,46 +1,101 @@
-import { NextResponse } from 'next/server';
-import { startAnalysisWorkerLoop } from '../../../../scripts/analysisWorker';
+import { NextRequest, NextResponse } from "next/server";
+import crypto from "crypto";
+import {
+  isAnalysisRunnerAuthorized,
+  registerUnhandledRejectionLogger,
+} from "@/lib/utils/analysisRunner";
+import { analysisJobService } from "@/lib/services/analysisJobService";
+import { repositoryService } from "@/lib/services/repositoryService";
 
-export const dynamic = 'force-dynamic';
-export const maxDuration = 300;
+export const runtime = "nodejs";
 
-export async function GET(request: Request) {
-  const requestStart = Date.now();
+const lastRunAtByIp = new Map<string, number>();
 
-  try {
-    // Auth check
-    const authHeader = request.headers.get('authorization');
+function isRateLimited(ip: string): boolean {
+  const now = Date.now();
+  const last = lastRunAtByIp.get(ip) ?? 0;
+  if (now - last < 5000) return true;
+  lastRunAtByIp.set(ip, now);
+  return false;
+}
 
-  const url = new URL(request.url);
-  const budgetParam = url.searchParams.get('timeBudgetMs');
-  const timeBudgetMs = budgetParam ? parseInt(budgetParam, 10) : 240_000;
+function getClientIp(request: NextRequest): string {
+  const forwarded = request.headers.get("x-forwarded-for");
+  if (forwarded) {
+    const ip = forwarded.split(",")[0]?.trim();
+    if (ip && ip !== "unknown") return ip;
+  }
+  return request.headers.get("x-real-ip") || request.ip || "unknown";
+}
 
-  if (Number.isNaN(timeBudgetMs) || timeBudgetMs < 10_000) {
+async function runOnce(request: NextRequest): Promise<NextResponse> {
+  registerUnhandledRejectionLogger();
+
+  if (!isAnalysisRunnerAuthorized(request)) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  const ip = getClientIp(request);
+  if (isRateLimited(ip)) {
     return NextResponse.json(
-      { error: 'timeBudgetMs must be at least 10000ms' },
-      { status: 400 },
+      { error: "Too many requests. Please wait before retrying." },
+      { status: 429 },
     );
   }
 
-  console.log(`Starting analysis cron run (budget: ${timeBudgetMs}ms)...`);
+  const workerId = `serverless:${process.env.VERCEL_REGION || "local"}:${crypto.randomBytes(6).toString("hex")}`;
+
+  const job = await analysisJobService.claimNextJob({ workerId });
+  if (!job) {
+    return new NextResponse(null, { status: 204 });
+  }
 
   try {
-    const metrics = await startAnalysisWorkerLoop({
-      timeBudgetMs,
+    await analysisJobService.updateProgress({
+      jobId: job.id,
+      workerId,
+      update: {
+        progressPercent: job.progressPercent ?? 0,
+        progressMessage: job.progressMessage ?? "Processing",
+      },
     });
 
-    console.log(`Finished analysis cron run. Summary:`, metrics);
-
-    return NextResponse.json({
-      success: metrics.success,
-      message: 'Analysis worker execution completed',
-      metrics,
+    await repositoryService.analyzeRepository(job.repositoryId, {
+      onProgress: async (update) => {
+        await analysisJobService.updateProgress({
+          jobId: job.id,
+          workerId,
+          update,
+        });
+      },
     });
+
+    await analysisJobService.markDone({ jobId: job.id, workerId });
+
+    return NextResponse.json({ ok: true, jobId: job.id, status: "DONE" });
   } catch (error: any) {
-    console.error('run-analysis cron error:', error instanceof Error ? error.message : "Unknown error");
-    return NextResponse.json({
-      error: 'Internal server error',
-      success: false,
-    }, { status: 500 });
+    const message = String(error?.message || error || "Unknown error");
+
+    await analysisJobService.markFailed({
+      jobId: job.id,
+      workerId,
+      error: message,
+      attempts: job.attempts,
+      maxAttempts: job.maxAttempts,
+    });
+
+    const sanitizedMessage =
+      process.env.NODE_ENV === "production"
+        ? "Analysis failed"
+        : message;
+
+    return NextResponse.json(
+      { ok: false, jobId: job.id, status: "FAILED", error: sanitizedMessage },
+      { status: 500 },
+    );
   }
+}
+
+export async function POST(request: NextRequest) {
+  return runOnce(request);
 }
