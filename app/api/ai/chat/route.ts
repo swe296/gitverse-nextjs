@@ -1,67 +1,107 @@
 import { NextRequest, NextResponse } from "next/server";
-import { isHttpError, requireAuth } from "@/lib/middleware";
+import { isHttpError, requireAuth, sanitizeError } from "@/lib/middleware";
 import { getGeminiService } from "@/lib/services/geminiService";
 import { repositoryService } from "@/lib/services/repositoryService";
+import { createRateLimiter } from "@/lib/utils/ipRateLimit";
+import {
+  validateContentType,
+  AI_REQUEST_LIMITS,
+} from "@/lib/utils/aiRequestValidation";
+
+// Rate limiter: 20 requests per user per minute across all AI chat calls.
+// Prevents a single authenticated user from burning Gemini quota unchecked.
+const aiChatLimiter = createRateLimiter({ windowMs: 60_000, maxRequests: 20 });
+
+// Allowed roles in the conversation history. Rejecting "system" entries from
+// client payloads prevents prompt injection via injected context.
+const ALLOWED_MESSAGE_ROLES = new Set(["user", "model"]);
 
 export async function POST(request: NextRequest) {
   try {
     const user = await requireAuth(request);
+
+    // Per-user rate limiting
+    if (!aiChatLimiter.check(user.userId)) {
+      return NextResponse.json(
+        { error: "Too many requests. Please wait before sending another message." },
+        { status: 429 }
+      );
+    }
+
+    const contentTypeError = validateContentType(request);
+    if (contentTypeError) return contentTypeError;
+
     const body = await request.json();
-    const { repositoryId, question, conversationHistory, prompt } = body;
+    const { repositoryId, question, conversationHistory } = body;
 
-    // Free-form mode: client provides a prebuilt prompt.
-    if (typeof prompt === "string" && prompt.trim()) {
-      const response = await getGeminiService().chatRaw(prompt);
-      return NextResponse.json({ response });
+    // Validate conversationHistory if provided.
+    // Only "user" and "model" roles are accepted to prevent system-role injection.
+    if (conversationHistory !== undefined) {
+      if (!Array.isArray(conversationHistory)) {
+        return NextResponse.json(
+          { error: "conversationHistory must be an array" },
+          { status: 400 }
+        );
+      }
+      if (conversationHistory.length > AI_REQUEST_LIMITS.MAX_CONVERSATION_HISTORY_COUNT) {
+        return NextResponse.json(
+          {
+            error: `Too many conversation history entries (max ${AI_REQUEST_LIMITS.MAX_CONVERSATION_HISTORY_COUNT})`,
+          },
+          { status: 400 }
+        );
+      }
+      for (const msg of conversationHistory) {
+        if (
+          !msg ||
+          typeof msg !== "object" ||
+          typeof msg.role !== "string" ||
+          !ALLOWED_MESSAGE_ROLES.has(msg.role) ||
+          typeof msg.content !== "string" ||
+          !msg.content.trim()
+        ) {
+          return NextResponse.json(
+            {
+              error:
+                "Each conversationHistory entry must have role ('user' or 'model') and a non-empty content string",
+            },
+            { status: 400 }
+          );
+        }
+        if (msg.content.length > AI_REQUEST_LIMITS.MAX_MESSAGE_CONTENT_CHARS) {
+          return NextResponse.json(
+            {
+              error: `Message content too long (max ${AI_REQUEST_LIMITS.MAX_MESSAGE_CONTENT_CHARS} characters)`,
+            },
+            { status: 400 }
+          );
+        }
+      }
     }
 
-    if (prompt !== undefined && typeof prompt !== "string") {
+    // All AI chat requests must supply a repositoryId so the ownership check
+    // below runs for every call. The previous free-form prompt path that
+    // bypassed this check has been removed.
+    if (!repositoryId || !question) {
       return NextResponse.json(
-        { error: "Prompt must be a string" },
+        { error: "repositoryId and question are required" },
         { status: 400 }
       );
     }
 
-    if (repositoryId == null || question == null) {
+    if (typeof question === "string" && question.length > AI_REQUEST_LIMITS.MAX_QUESTION_CHARS) {
       return NextResponse.json(
-        { error: "Repository ID and question are required" },
+        {
+          error: `Question too long (max ${AI_REQUEST_LIMITS.MAX_QUESTION_CHARS} characters)`,
+        },
         { status: 400 }
       );
     }
 
-    const parsedRepoId = Number(repositoryId);
-    if (!Number.isFinite(parsedRepoId)) {
-      return NextResponse.json(
-        { error: "Repository ID must be a valid number" },
-        { status: 400 }
-      );
-    }
-
-    if (typeof question !== "string" || !question.trim()) {
-      return NextResponse.json(
-        { error: "Question must be a non-empty string" },
-        { status: 400 }
-      );
-    }
-
-    if (
-      conversationHistory !== undefined &&
-      (!Array.isArray(conversationHistory) ||
-        conversationHistory.some(
-          (m: any) =>
-            typeof m !== "object" ||
-            !["user", "assistant"].includes(m.role) ||
-            typeof m.content !== "string"
-        ))
-    ) {
-      return NextResponse.json(
-        { error: "conversationHistory must be an array of {role, content} objects" },
-        { status: 400 }
-      );
-    }
-
+    // Ownership check: getRepository returns null if the repository does not
+    // belong to the requesting user, so unauthorized access returns 404.
     const repository = await repositoryService.getRepository(
-      parsedRepoId,
+      repositoryId,
       user.userId
     );
 
@@ -86,7 +126,7 @@ export async function POST(request: NextRequest) {
     };
 
     const response = await getGeminiService().chatAboutRepository({
-      repositoryId: parsedRepoId,
+      repositoryId,
       question,
       conversationHistory,
       context,
@@ -94,7 +134,7 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({ response, question });
   } catch (error: any) {
-    console.error("AI chat error:", error);
+    console.error("AI chat error:", sanitizeError(error));
 
     if (isHttpError(error)) {
       return NextResponse.json(

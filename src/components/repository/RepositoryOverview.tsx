@@ -1,5 +1,5 @@
-"use client";
-
+import { useState, Children, isValidElement } from "react";
+import { FavoriteButton } from "./FavoriteButton";
 import {
   GitBranch,
   Star,
@@ -19,6 +19,8 @@ import {
   CardTitle,
   CardDescription,
   CardContent,
+  Skeleton,
+  CopyToClipboard,
 } from "@/components/ui";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -50,6 +52,23 @@ interface RepositoryOverviewProps {
 export const RepositoryOverview = ({
   repositoryData,
 }: RepositoryOverviewProps) => {
+  const [isFavorited, setIsFavorited] = useState(false);
+
+  const handleToggleFavorite = async (id: string, nextState: boolean) => {
+    // Simulate server API latency of 1.5 seconds
+    await new Promise((resolve, reject) => {
+      setTimeout(() => {
+        // Simulate a 30% chance of failure to showcase the try/catch rollback
+        if (Math.random() > 0.7) {
+          reject(new Error("Database connection lost. Please try again."));
+        } else {
+          setIsFavorited(nextState);
+          resolve(null);
+        }
+      }, 1500);
+    });
+  };
+
   // IMPORTANT: derive README directly from props so it always matches the
   // currently-selected repository (avoids showing stale README when navigating).
   const readmeText: string | null = repositoryData?.readmeText ?? null;
@@ -140,6 +159,9 @@ export const RepositoryOverview = ({
   }));
 
   const hasUsableReadme = Boolean(readmeText && readmeText !== "doesnt exist");
+  const isAnalyzing =
+    repositoryData?.status === "pending" ||
+    repositoryData?.status === "analyzing";
 
   const githubRawBase = (() => {
     const url = String(repositoryData?.url || "");
@@ -272,6 +294,14 @@ export const RepositoryOverview = ({
                 Updated {repository.updatedAt}
               </span>
             </div>
+          </div>
+          {/* Favorite Action Button */}
+          <div className="flex-shrink-0 self-start sm:self-center">
+            <FavoriteButton
+              initialIsFavorited={isFavorited}
+              repositoryId={repository.id}
+              onToggle={handleToggleFavorite}
+            />
           </div>
         </div>
 
@@ -427,7 +457,22 @@ export const RepositoryOverview = ({
             </CardDescription>
           </CardHeader>
           <CardContent className="p-4 sm:p-6 pt-0 sm:pt-0 space-y-3">
-            {hasUsableReadme ? (
+            {isAnalyzing && !hasUsableReadme ? (
+              <div className="bg-background/50 border border-border/50 rounded-lg p-4 space-y-4" aria-busy="true" aria-label="Loading README">
+                <Skeleton className="h-8 w-1/3 sm:w-1/4" />
+                <div className="space-y-2">
+                  <Skeleton className="h-4 w-full" />
+                  <Skeleton className="h-4 w-11/12" />
+                  <Skeleton className="h-4 w-5/6" />
+                </div>
+                <div className="pt-4 space-y-2">
+                  <Skeleton className="h-6 w-1/4 sm:w-1/5" />
+                  <Skeleton className="h-4 w-full" />
+                  <Skeleton className="h-4 w-4/5" />
+                  <Skeleton className="h-32 w-full mt-4" />
+                </div>
+              </div>
+            ) : hasUsableReadme ? (
               <div className="bg-background/50 border border-border/50 rounded-lg p-3 max-h-96 overflow-auto text-sm leading-relaxed">
                 <ReactMarkdown
                   remarkPlugins={[remarkGfm]}
@@ -522,12 +567,31 @@ export const RepositoryOverview = ({
                         </code>
                       );
                     },
-                    pre: (props) => (
-                      <pre
-                        className="my-3 p-3 rounded-lg bg-black/30 overflow-auto"
-                        {...props}
-                      />
-                    ),
+                    pre: ({ children, ...props }) => {
+                      let codeText = "";
+                      Children.forEach(children, (child) => {
+                        if (isValidElement(child) && child.props) {
+                          codeText = String(child.props.children || "");
+                        }
+                      });
+
+                      return (
+                        <div className="relative group my-3">
+                          <pre
+                            className="p-3 rounded-lg bg-black/30 overflow-auto"
+                            {...props}
+                          >
+                            {children}
+                          </pre>
+                          {codeText && (
+                            <CopyToClipboard
+                              text={codeText.replace(/\n$/, "")}
+                              className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity"
+                            />
+                          )}
+                        </div>
+                      );
+                    },
                     ul: (props) => (
                       <ul
                         className="list-disc pl-6 my-2 space-y-1"
